@@ -1,0 +1,5 @@
+(version 1)
+(allow default)
+(deny network-outbound)
+; The only network exception is the local native WebDriver test connection.
+(allow network-outbound (remote ip "localhost:*"))

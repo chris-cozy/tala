@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Legacy ICNS assets need their own silhouette and transparent outer margin.
+       Keep the original artwork separate so this packaging treatment is reproducible. -->
+  <defs>
+    <path id="tile" d="M 330 100 H 694 C 774 100 814 100 845 116 C 873 130 894 151 908 179 C 924 210 924 250 924 330 V 694 C 924 774 924 814 908 845 C 894 873 873 894 845 908 C 814 924 774 924 694 924 H 330 C 250 924 210 924 179 908 C 151 894 130 873 116 845 C 100 814 100 774 100 694 V 330 C 100 250 100 210 116 179 C 130 151 151 130 179 116 C 210 100 250 100 330 100 Z" />
+    <clipPath id="silhouette"><use href="#tile" /></clipPath>
+    <filter id="shadow" x="-15%" y="-15%" width="130%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="7" flood-color="#000000" flood-opacity="0.24" />
+    </filter>
+  </defs>
+  <use href="#tile" fill="#08090b" filter="url(#shadow)" />
+  <image href="../../public/tala-mark.png" x="100" y="100" width="824" height="824" preserveAspectRatio="xMidYMid meet" clip-path="url(#silhouette)" />
+  <use href="#tile" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="1" />
+</svg>
