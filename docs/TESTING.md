@@ -13,7 +13,7 @@ pnpm test:rust
 pnpm build
 ```
 
-Prettier and rustfmt check formatting. TypeScript checks strict types and unused declarations; Clippy checks all native targets with warnings denied. Vitest covers shared rich-content rendering, mathematics, typed comparisons, and duration parsing. Rust unit/integration tests exercise scheduling, migration/transaction behavior, session limits, undo, imports, backups, integrity, malformed data, and recovery.
+Prettier and rustfmt check formatting. TypeScript checks strict types and unused declarations; Clippy checks all native targets with warnings denied. Vitest covers shared rich-content rendering, mathematics, typed comparisons, duration parsing, tree navigation, Anki import gates, and audio playback lifecycle. Rust unit/integration tests exercise scheduling, migration/transaction behavior, session limits, undo, imports, backups, integrity, malformed data, and recovery.
 
 Rust tests also regenerate the ts-rs contracts under `src/bindings/` and `src-tauri/bindings/`. Review those changes alongside their Rust definitions. The generated files are excluded from Prettier to keep regeneration deterministic.
 
@@ -29,9 +29,19 @@ The build uses the optional Cargo `e2e` feature and a separate Tauri identifier.
 
 WebdriverIO drives real WKWebView windows and production Rust collection commands. Each run creates a fresh `.test-data/native-*` directory. The test-only bridge supplies a controllable clock and purpose-specific file selections in place of OS dialog interaction. It does not replace SQLite, the scheduler, or transfer validation. Normal builds exclude that bridge and WebDriver plugins.
 
-The nine workflows cover empty launch, deck/artwork management, rich editing and preview, study/undo, typed and reversed cards, search/bulk/trash actions, images/math, statistics/resizing, import/export/restore, and unsaved-edit/native-quit protection. Screenshots and diagnostic logs go to ignored `artifacts/e2e/`.
+The workflows cover empty launch, deck/artwork management, rich editing and preview, study/undo, typed and reversed cards, search/bulk/trash actions, images/math, statistics/resizing, import/export/restore, hierarchy navigation, audio/preferences, Anki import, and unsaved-edit/native-quit protection. Screenshots and diagnostic logs go to ignored `artifacts/e2e/`.
 
 The optional offline pass runs the test app under macOS `sandbox-exec`, denying external connections while permitting localhost for WebDriver. It does not change system networking. This tests the application process, not unrelated external applications opened by a link. An interactive desktop session is required.
+
+## Anki reference acceptance
+
+Synthetic package fixtures remain in CI and cover legacy/modern collections, template conversion, media, explicit skipping, duplicate policies, unsafe structures, and stale previews. The larger reference deck is intentionally not committed. Download [Ray’s Tagalog for Beginners](https://ankiweb.net/shared/info/1928298946) and run against disposable storage:
+
+```sh
+TALA_REFERENCE_APKG="/absolute/path/to/reference.apkg" cargo test --release --locked --manifest-path src-tauri/Cargo.toml --test anki_import reference_deck_import_backup_and_reimport_acceptance -- --ignored --nocapture
+```
+
+The reference contains 69 related decks (68 populated lessons), 1,432 cards, 1,409 referenced MP3 filenames, and 1,430 sound references. Three pairs of MP3 files have identical bytes, so content-addressed storage keeps 1,406 audio assets. The two cards without audio remain valid. For optional reference MP3 playback coverage, set the same `TALA_REFERENCE_APKG` variable when running the native offline UI suite. The test extracts one track into ignored disposable storage; generated WAV/APKG fixtures cover the default suite. The acceptance test checks these deck/card/media/reference counts, prompt/answer conversion, warning reporting, reimport skipping, and native archive recovery. Native UI tests also cover hierarchical navigation and audio playback/preferences in the packaged WKWebView offline. MP3 decoding is substantially slower in an unoptimized debug build; prefer release mode for this larger fixture.
 
 ## Large-collection benchmark
 
@@ -43,6 +53,6 @@ This explicit test generates 50,000 cards and 500,000 review records in temporar
 
 ## Manual release checks
 
-Use a disposable collection to inspect a packaged app: create/edit/study, close and reopen, check images and equations offline, restore an export, and verify the minimum window size and interface scales. Native tests supply file-picker selections, so separately confirm real OS dialogs when changing dialog integration. Check keyboard focus, accessibility labels, and reduced motion for UI changes.
+Use a disposable collection to inspect a packaged app: create/edit/study, close and reopen, check nested decks, images, audio, and equations offline, restore an export, and verify the minimum window size and interface scales. Native tests supply file-picker selections, so separately confirm real OS dialogs when changing dialog integration. Check keyboard focus, accessibility labels, and reduced motion for UI changes.
 
 Only copy deliberately reviewed screenshots into `docs/screenshots/`. Settings screens can reveal local paths; failure captures and logs are not publication assets.

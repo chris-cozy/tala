@@ -1,0 +1,151 @@
+.deck-tree,
+.deck-tree ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.deck-tree {
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--panel);
+}
+.deck-tree li:focus-visible > .deck-tree-row {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.deck-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.deck-tree-row:hover {
+  background: #ffffff03;
+}
+.tree-toggle {
+  width: 30px;
+  flex-shrink: 0;
+}
+.tree-toggle svg {
+  transition: transform 150ms;
+}
+.tree-toggle svg.expanded {
+  transform: rotate(90deg);
+}
+.deck-tree-name {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  background: none;
+  border: 0;
+  padding: 0;
+}
+.deck-tree-name strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.deck-tree-name small {
+  display: block;
+  color: var(--muted);
+  margin-top: 5px;
+}
+.tree-due {
+  color: var(--muted);
+  white-space: nowrap;
+  font-size: 12px;
+}
+.tree-deck-icon {
+  color: var(--dot, var(--accent));
+  flex-shrink: 0;
+}
+.deck-breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 18px;
+}
+.deck-breadcrumbs button {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.deck-breadcrumbs span {
+  font-size: 12px;
+}
+.audio-clip {
+  max-width: 100%;
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--panel-raised);
+  text-align: left;
+}
+.audio-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.audio-label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.audio-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+.audio-controls audio {
+  width: 100%;
+  height: 36px;
+  min-width: 0;
+}
+.audio-error {
+  display: block;
+  color: #f5b37d;
+  font-size: 12px;
+  margin-top: 8px;
+}
+.anki-destinations {
+  max-height: 220px;
+  overflow: auto;
+  padding: 10px 0;
+}
+.anki-destinations .field {
+  margin: 8px 0;
+}
+.anki-card-preview {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  margin: 10px 0;
+}
+.anki-card-preview .content-render {
+  font-size: 14px;
+}
+.anki-issues {
+  max-height: 240px;
+  overflow: auto;
+}
+@media (max-width: 1080px) {
+  .tree-due {
+    display: none;
+  }
+  .deck-tree-row {
+    gap: 7px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tree-toggle svg {
+    transition: none;
+  }
+}

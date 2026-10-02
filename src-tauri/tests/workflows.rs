@@ -7,6 +7,7 @@ fn setup() -> (TempDir, Store, String) {
     store.clock_override = Some(Clock::at(1_787_840_000, chrono_tz::America::New_York));
     let deck = store
         .save_deck(DeckInput {
+            parent_id: None,
             id: None,
             name: "Biology".into(),
             cover: None,
@@ -79,6 +80,7 @@ fn lifecycle_persists_content_scheduling_history_and_reversible_actions() {
     assert_eq!(store.card(&card.id).unwrap().schedule, before);
     let second = store
         .save_deck(DeckInput {
+            parent_id: None,
             id: None,
             name: "Science".into(),
             cover: None,
@@ -129,6 +131,7 @@ fn learning_waits_daily_caps_bury_expiry_and_duplicate_review_submissions() {
     };
     store
         .save_deck(DeckInput {
+            parent_id: None,
             id: Some(deck.clone()),
             name: "Biology".into(),
             cover: None,
@@ -196,6 +199,7 @@ fn full_native_archive_restores_media_and_history_without_losing_current_backup(
         .unwrap();
     store
         .save_deck(DeckInput {
+            parent_id: None,
             id: Some(deck.clone()),
             name: "Biology".into(),
             cover: Some(media.clone()),
@@ -374,6 +378,7 @@ fn leeches_relearning_manual_scheduling_and_stale_grades_are_safe() {
     };
     store
         .save_deck(DeckInput {
+            parent_id: None,
             id: Some(deck.clone()),
             name: "Biology".into(),
             cover: None,
@@ -724,6 +729,7 @@ fn study_order_is_stable_and_active_sessions_observe_changed_limits() {
             .unwrap();
         store
             .save_deck(DeckInput {
+                parent_id: None,
                 id: Some(deck.clone()),
                 name: "Biology".into(),
                 color: "teal".into(),
@@ -745,6 +751,7 @@ fn study_order_is_stable_and_active_sessions_observe_changed_limits() {
     }
     store
         .save_deck(DeckInput {
+            parent_id: None,
             id: Some(deck),
             name: "Biology".into(),
             color: "teal".into(),

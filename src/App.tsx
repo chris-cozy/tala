@@ -58,7 +58,10 @@ function Workspace() {
   } | null>(null);
   const [confirmState, setConfirm] = useState<ConfirmState | null>(null);
   const [askState, setAsk] = useState<AskState | null>(null);
-  const [deckDialog, setDeckDialog] = useState<{ deck?: Deck } | null>(null);
+  const [deckDialog, setDeckDialog] = useState<{
+    deck?: Deck;
+    parentId?: string;
+  } | null>(null);
   const [transfer, setTransfer] = useState<{
     type: "import" | "export";
     deckId?: string;
@@ -278,11 +281,6 @@ function Workspace() {
   const data = collection.data;
   const due = data.today.newCount + data.today.learning + data.today.review;
   function importCards(deckId?: string) {
-    if (!data.decks.length) {
-      notify("Create a deck before importing your cards.");
-      setDeckDialog({});
-      return;
-    }
     setTransfer({ type: "import", deckId });
   }
   function content() {
@@ -336,7 +334,7 @@ function Workspace() {
         confirm,
         ask,
         notify,
-        editDeck: (deck) => setDeckDialog({ deck }),
+        editDeck: (deck, parentId) => setDeckDialog({ deck, parentId }),
         startStudy,
         setDirty,
         importCards,
@@ -478,6 +476,7 @@ function Workspace() {
         {deckDialog && (
           <DeckDialog
             deck={deckDialog.deck}
+            parentId={deckDialog.parentId}
             onClose={() => setDeckDialog(null)}
           />
         )}{" "}

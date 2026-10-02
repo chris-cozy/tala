@@ -139,7 +139,12 @@ export default function StudyPage() {
   }
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
-      if (isTyping(event.target) || document.querySelector('[role="dialog"]'))
+      if (
+        isTyping(event.target) ||
+        (event.target instanceof HTMLElement &&
+          event.target.closest(".audio-clip")) ||
+        document.querySelector('[role="dialog"]')
+      )
         return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
         event.preventDefault();
@@ -237,7 +242,10 @@ export default function StudyPage() {
               onClick={(event) => {
                 if (
                   card.behavior !== "typed" &&
-                  !(event.target as HTMLElement).closest("a,button,input")
+                  event.currentTarget.contains(event.target as Node) &&
+                  !(event.target as HTMLElement).closest(
+                    'a,button,input,audio,.audio-clip,[role="menuitem"]',
+                  )
                 )
                   reveal();
               }}
@@ -293,6 +301,8 @@ export default function StudyPage() {
                 )}
                 <ContentRender
                   directory={data.mediaDir}
+                  playbackKey={`${card.id}-${card.revision}-${revealed ? "answer" : "question"}`}
+                  autoplay={data.preferences.audioAutoplay && !details && !busy}
                   value={
                     revealed
                       ? card.behavior === "reversed"

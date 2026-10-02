@@ -92,29 +92,7 @@ impl Store {
         conn.execute_batch(
             "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
         )?;
-        let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 1 {
-            return Err(AppError::invalid(
-                "This collection was created by a newer Tala version. Update Tala before opening it.",
-            ));
-        }
-        if version == 0 {
-            let tx = conn.transaction()?;
-            tx.execute_batch(include_str!("../migrations/001_initial.sql"))?;
-            tx.commit()?;
-        }
-        // Ensure derived performance indexes exist for every schema-v1 collection.
-        // This does not change source content or the archive format.
-        if version == 1 {
-            let tx = conn.transaction()?;
-            tx.execute_batch(
-                "CREATE INDEX IF NOT EXISTS reviews_daily_summary ON reviews(day,grade,duration_ms) WHERE \
-                    undone_at IS NULL; CREATE INDEX IF NOT EXISTS reviews_first_graduation ON \
-                    reviews(card_id) WHERE undone_at IS NULL AND \
-                    json_extract(after_state,'$.phase')='review';",
-            )?;
-            tx.commit()?;
-        }
+        crate::hierarchy::migrate(&mut conn)?;
         Ok(Self {
             conn,
             root,
@@ -275,7 +253,17 @@ impl Store {
             return Err(AppError::invalid("Choose a supported deck color."));
         }
         if let Some(ref cover) = input.cover {
-            self.assert_media(cover)?;
+            self.assert_media_kind(cover, "image/")?;
+        }
+        if let Some(parent) = &input.parent_id {
+            self.assert_deck(parent)?;
+            if let Some(id) = &input.id
+                && (id == parent || self.descendant_ids(id)?.contains(parent))
+            {
+                return Err(AppError::invalid(
+                    "A deck cannot be placed inside itself or one of its descendants.",
+                ));
+            }
         }
         let deck_id = input.id.clone().unwrap_or_else(id);
         let now = self.now().now;
@@ -285,11 +273,11 @@ impl Store {
                 store.assert_deck(&deck_id)?;
                 store
                     .conn
-                    .execute("UPDATE decks SET name=?1,cover=?2,color=?3,settings=?4,updated_at=?5 WHERE id=?6", params![name, input.cover, input.color, serde_json::to_string(&input.settings)?, now, deck_id])?;
+                    .execute("UPDATE decks SET name=?1,cover=?2,color=?3,settings=?4,updated_at=?5,parent_id=?7 WHERE id=?6", params![name, input.cover, input.color, serde_json::to_string(&input.settings)?, now, deck_id, input.parent_id])?;
             } else {
                 store.conn.execute(
-                    "INSERT INTO decks(id,name,cover,color,settings,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?6)",
-                    params![deck_id, name, input.cover, input.color, serde_json::to_string(&input.settings)?, now],
+                    "INSERT INTO decks(id,name,cover,color,settings,created_at,updated_at,parent_id) VALUES (?1,?2,?3,?4,?5,?6,?6,?7)",
+                    params![deck_id, name, input.cover, input.color, serde_json::to_string(&input.settings)?, now, input.parent_id],
                 )?;
             }
             store.dirty()?;
@@ -322,15 +310,45 @@ impl Store {
         }
         Ok(())
     }
+    pub(crate) fn assert_media_kind(&self, id: &str, kind: &str) -> Result<()> {
+        self.assert_media(id)?;
+        let mime: String =
+            self.conn
+                .query_row("SELECT mime FROM media WHERE id=?1", [id], |r| r.get(0))?;
+        if !mime.starts_with(kind) {
+            return Err(AppError::invalid(
+                "This media reference has the wrong type. Attach the file again.",
+            ));
+        }
+        Ok(())
+    }
+    pub(crate) fn assert_document_media(&self, document: &serde_json::Value) -> Result<()> {
+        match document["type"].as_str() {
+            Some("audio") => self.assert_media_kind(
+                document["attrs"]["mediaId"].as_str().unwrap_or(""),
+                "audio/",
+            )?,
+            Some("image") => self.assert_media_kind(
+                document["attrs"]["mediaId"].as_str().unwrap_or(""),
+                "image/",
+            )?,
+            _ => {}
+        }
+        if let Some(children) = document["content"].as_array() {
+            for node in children {
+                self.assert_document_media(node)?;
+            }
+        }
+        Ok(())
+    }
     /// Updates content, tags, and deck membership while preserving memory and review history.
     pub fn save_note(&mut self, input: NoteInput) -> Result<CardView> {
         self.assert_deck(&input.deck_id)?;
         let (front, mut media) = validate_document(&input.front)?;
         let (back, back_media) = validate_document(&input.back)?;
         media.extend(back_media);
-        for media_id in &media {
-            self.assert_media(media_id)?;
-        }
+        self.assert_document_media(&front)?;
+        self.assert_document_media(&back)?;
         let front_text = plain_text(&front);
         let back_text = plain_text(&back);
         let key = normalized(&front_text);
@@ -403,8 +421,13 @@ impl Store {
             values.push(terms.into());
         }
         if let Some(deck) = query.deck {
-            clauses.push("c.deck_id=?".into());
-            values.push(deck.into());
+            let ids = if query.only_this_deck {
+                vec![deck]
+            } else {
+                self.descendant_ids(&deck)?
+            };
+            clauses.push("c.deck_id IN (SELECT value FROM json_each(?))".into());
+            values.push(serde_json::to_string(&ids)?.into());
         }
         if let Some(tag) = query.tag {
             clauses.push(
@@ -566,31 +589,45 @@ impl Store {
         })
     }
     pub fn delete_deck(&mut self, deck: &str, move_to: Option<String>) -> Result<()> {
+        self.delete_deck_scope(deck, move_to, false)
+    }
+    pub fn delete_deck_scope(
+        &mut self,
+        deck: &str,
+        move_to: Option<String>,
+        branch: bool,
+    ) -> Result<()> {
         self.assert_deck(deck)?;
-        if move_to.as_deref() == Some(deck) {
-            return Err(AppError::invalid("Choose a different destination deck."));
-        }
+        let descendants = self.descendant_ids(deck)?;
         if let Some(ref target) = move_to {
             self.assert_deck(target)?;
+            if descendants.contains(target) {
+                return Err(AppError::invalid(
+                    "Choose a destination outside this branch.",
+                ));
+            }
         }
-        self.transaction(|store| {
-            let ids = store
-                .conn
-                .prepare("SELECT id FROM cards WHERE deck_id=?1 AND deleted_at IS NULL")?
-                .query_map([deck], |r| r.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            if !ids.is_empty() {
-                store.bulk(BulkInput {
-                    ids,
-                    action: if move_to.is_some() { "move" } else { "delete" }.into(),
-                    value: move_to,
+        let ids = if branch {
+            descendants
+        } else {
+            vec![deck.to_string()]
+        };
+        let parent: Option<String> =
+            self.conn
+                .query_row("SELECT parent_id FROM decks WHERE id=?1", [deck], |r| {
+                    r.get(0)
                 })?;
+        self.transaction(|store| {
+            let cards = store.conn.prepare("SELECT id FROM cards WHERE deck_id IN (SELECT value FROM json_each(?1)) AND deleted_at IS NULL")?
+                .query_map([serde_json::to_string(&ids)?], |r|r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            if !cards.is_empty() {
+                store.bulk(BulkInput{ids:cards, action:if move_to.is_some(){"move"}else{"delete"}.into(), value:move_to})?;
+            }
+            if !branch {
+                store.conn.execute("UPDATE decks SET parent_id=?1,updated_at=?2 WHERE parent_id=?3 AND deleted_at IS NULL", params![parent,store.now().now,deck])?;
             }
             store.clear_undo()?;
-            store.conn.execute(
-                "UPDATE decks SET deleted_at=?1 WHERE id=?2",
-                params![store.now().now, deck],
-            )?;
+            store.conn.execute("UPDATE decks SET deleted_at=?1 WHERE id IN (SELECT value FROM json_each(?2))",params![store.now().now,serde_json::to_string(&ids)?])?;
             store.dirty()
         })
     }

@@ -20,6 +20,7 @@ import {
   ListOrdered,
   Link,
   ImagePlus,
+  Volume2,
   Code,
   Eraser,
   Undo2,
@@ -35,6 +36,7 @@ import { useTala } from "../lib/context";
 import { mediaUrl, openExternal, pickFile, rpc } from "../lib/api";
 import { IconButton } from "./ui";
 import "katex/dist/katex.min.css";
+import { LocalAudio, useAudioPlayback } from "./AudioContent";
 
 export type Doc = JSONContent;
 export const emptyDoc = (): Doc => ({
@@ -82,7 +84,7 @@ export function hasContent(doc: Doc): boolean {
 export function displayDoc(value: unknown, directory: string): Doc {
   const doc = JSON.parse(JSON.stringify(value)) as Doc;
   function walk(node: Doc) {
-    if (node.type === "image")
+    if (node.type === "image" || node.type === "audio")
       node.attrs = {
         ...node.attrs,
         src: mediaUrl(directory, node.attrs?.mediaId),
@@ -111,6 +113,7 @@ function extensions(
   return [
     StarterKit.configure({ link: { openOnClick: false, autolink: false } }),
     LocalImage.configure({ allowBase64: false }),
+    LocalAudio,
     TextStyle,
     Color,
     Highlight.configure({ multicolor: true }),
@@ -131,11 +134,17 @@ export function ContentRender({
   value,
   directory,
   className = "",
+  playbackKey,
+  autoplay = false,
 }: {
   value: unknown;
   directory: string;
   className?: string;
+  playbackKey?: string;
+  autoplay?: boolean;
 }) {
+  const host = useRef<HTMLDivElement>(null);
+  const playbackError = useAudioPlayback(host, playbackKey, autoplay);
   const editor = useEditor({
     extensions: extensions(),
     editable: false,
@@ -161,6 +170,7 @@ export function ContentRender({
   }, [editor, value, directory]);
   return (
     <div
+      ref={host}
       className={`content-render ${className}`}
       onErrorCapture={(e) => {
         if (e.target instanceof HTMLImageElement)
@@ -168,6 +178,11 @@ export function ContentRender({
       }}
     >
       <EditorContent editor={editor} />
+      {playbackError && (
+        <small className="audio-error" role="status">
+          {playbackError}
+        </small>
+      )}
     </div>
   );
 }
@@ -188,24 +203,30 @@ export function RichField({
   onChangeRef.current = onChange;
   async function attachBytes(file: File) {
     setUploading(true);
+    const isAudio =
+      /\.(mp3|wav)$/i.test(file.name) || file.type.startsWith("audio/");
     const media = await run(async () => {
       if (file.size > 20 * 1024 * 1024)
-        throw new Error("Images must be smaller than 20 MB.");
+        throw new Error("Media files must be no larger than 20 MB.");
       return rpc({
-        action: "attach_bytes",
+        action: isAudio ? "attach_audio_bytes" : "attach_bytes",
         payload: {
           bytes: Array.from(new Uint8Array(await file.arrayBuffer())),
         },
       });
     });
-    if (media)
-      editorRef.current
-        ?.chain()
+    const current = editorRef.current;
+    if (media && current)
+      current
+        .chain()
         .focus()
-        .setImage({
-          src: mediaUrl(data.mediaDir, media)!,
-          alt: file.name,
-          ...{ mediaId: media },
+        .insertContentAt(current.state.selection.to, {
+          type: isAudio ? "audio" : "image",
+          attrs: {
+            src: mediaUrl(data.mediaDir, media),
+            mediaId: media,
+            ...(isAudio ? { label: file.name } : { alt: file.name }),
+          },
         })
         .run();
     setUploading(false);
@@ -239,23 +260,33 @@ export function RichField({
             : "The answer, in your own words…",
       },
       handlePaste: (_view, event) => {
-        const file = Array.from(event.clipboardData?.files ?? []).find((f) =>
-          f.type.startsWith("image/"),
+        const files = Array.from(event.clipboardData?.files ?? []).filter(
+          (f) =>
+            f.type.startsWith("image/") ||
+            f.type.startsWith("audio/") ||
+            /\.(mp3|wav)$/i.test(f.name),
         );
-        if (file) {
+        if (files.length) {
           event.preventDefault();
-          void attachBytes(file);
+          void (async () => {
+            for (const file of files) await attachBytes(file);
+          })();
           return true;
         }
         return false;
       },
       handleDrop: (_view, event) => {
-        const file = Array.from(event.dataTransfer?.files ?? []).find((f) =>
-          f.type.startsWith("image/"),
+        const files = Array.from(event.dataTransfer?.files ?? []).filter(
+          (f) =>
+            f.type.startsWith("image/") ||
+            f.type.startsWith("audio/") ||
+            /\.(mp3|wav)$/i.test(f.name),
         );
-        if (file) {
+        if (files.length) {
           event.preventDefault();
-          void attachBytes(file);
+          void (async () => {
+            for (const file of files) await attachBytes(file);
+          })();
           return true;
         }
         return false;
@@ -292,6 +323,32 @@ export function RichField({
             src: mediaUrl(data.mediaDir, media),
             mediaId: media,
             alt: "",
+          },
+        })
+        .run();
+    setUploading(false);
+  }
+  async function audio() {
+    setUploading(true);
+    const attached = await run(async () => {
+      const selected = await pickFile("audio");
+      if (!selected) return null;
+      const id = await rpc({
+        action: "attach_audio_file",
+        payload: { token: selected.token },
+      });
+      return { id, label: selected.name };
+    });
+    if (attached && editor)
+      editor
+        .chain()
+        .focus()
+        .insertContentAt(editor.state.selection.to, {
+          type: "audio",
+          attrs: {
+            mediaId: attached.id,
+            label: attached.label,
+            src: mediaUrl(data.mediaDir, attached.id),
           },
         })
         .run();
@@ -374,6 +431,7 @@ export function RichField({
       action: () => void link(),
     },
     { label: "Attach image", icon: ImagePlus, action: () => void image() },
+    { label: "Attach audio", icon: Volume2, action: () => void audio() },
     { label: "Inline equation", icon: Sigma, action: () => void math(false) },
     { label: "Display equation", icon: Sigma, action: () => void math(true) },
     {
@@ -459,7 +517,7 @@ export function RichField({
         </IconButton>
       </div>
       <EditorContent editor={editor} />
-      {uploading && <div className="field-status">Adding image…</div>}
+      {uploading && <div className="field-status">Adding media…</div>}
     </div>
   );
 }

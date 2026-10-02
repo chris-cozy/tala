@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import {
   Plus,
   Search,
@@ -16,30 +16,40 @@ import type { Deck } from "../bindings/Deck";
 import { useTala } from "../lib/context";
 import { number } from "../lib/format";
 import { rpc } from "../lib/api";
-import { Button, Empty, Menu, PageHeader, Progress } from "../components/ui";
+import {
+  Button,
+  Empty,
+  Menu,
+  Modal,
+  PageHeader,
+  Progress,
+} from "../components/ui";
 import { DeckArt } from "../components/DeckDialog";
 import { DeckSettingsDialog } from "../components/SchedulingSettings";
+import { DeckTree } from "../components/DeckTree";
+import { branchIds, deckAncestors } from "../lib/decks";
 
 export function DeckMenu({ deck }: { deck: Deck }) {
-  const {
-    navigate,
-    editDeck,
-    confirm,
-    run,
-    importCards,
-    exportCards,
-    ask,
-    data,
-  } = useTala();
+  const { navigate, editDeck, confirm, run, importCards, exportCards, data } =
+    useTala();
   const [settings, setSettings] = useState(false);
-  async function remove() {
-    const hasCards = deck.total > 0;
+  const [moving, setMoving] = useState(false);
+  const [destination, setDestination] = useState("");
+  const descendants = branchIds(data.decks, deck.id);
+  const hasChildren = descendants.size > 1;
+  async function remove(branch = false) {
+    const count = branch ? deck.subtreeCounts.total : deck.total;
+    const hasCards = count > 0;
     if (
       !(await confirm({
-        title: `Delete “${deck.name}”?`,
+        title: `Delete ${branch ? "branch" : "deck"} “${deck.name}”?`,
         message: hasCards
-          ? `${number(deck.total)} cards will move to Recently Deleted, along with their notes. You can restore them into another deck. Review history is kept until permanent deletion.`
-          : "This empty deck will be removed.",
+          ? `${number(count)} cards will move to Recently Deleted. ${branch ? `${descendants.size} decks will be removed.` : hasChildren ? "Child decks will move up one level." : ""} Review history is kept until permanent deletion.`
+          : branch
+            ? "This branch will be removed."
+            : hasChildren
+              ? "This empty parent will be removed; child decks will move up one level."
+              : "This empty deck will be removed.",
         confirm: "Delete deck",
         danger: true,
       }))
@@ -49,30 +59,18 @@ export function DeckMenu({ deck }: { deck: Deck }) {
       () =>
         rpc({
           action: "delete_deck",
-          payload: { deckId: deck.id, moveTo: null },
+          payload: { deckId: deck.id, moveTo: null, branch },
         }),
       "Deck deleted",
     );
     await navigate({ page: "decks" });
   }
   async function moveAndDelete() {
-    const other = data.decks.filter((d) => d.id !== deck.id);
-    const name = await ask(
-      "Move cards and delete deck",
-      `Destination deck name (${other.map((d) => d.name).join(", ")})`,
+    const target = data.decks.find(
+      (candidate) =>
+        candidate.id === destination && !descendants.has(candidate.id),
     );
-    if (!name) return;
-    const target = other.find(
-      (d) => d.name.toLowerCase() === name.toLowerCase(),
-    );
-    if (!target) {
-      await run(() =>
-        Promise.reject(
-          new Error("Choose the exact name of an existing destination deck."),
-        ),
-      );
-      return;
-    }
+    if (!target) return;
     if (
       await confirm({
         title: "Move cards and delete deck?",
@@ -85,7 +83,7 @@ export function DeckMenu({ deck }: { deck: Deck }) {
         () =>
           rpc({
             action: "delete_deck",
-            payload: { deckId: deck.id, moveTo: target.id },
+            payload: { deckId: deck.id, moveTo: target.id, branch: false },
           }),
         "Cards moved and deck deleted",
       );
@@ -101,6 +99,11 @@ export function DeckMenu({ deck }: { deck: Deck }) {
             label: "Edit name & artwork",
             icon: <Pencil size={15} />,
             action: () => editDeck(deck),
+          },
+          {
+            label: "Add subdeck",
+            icon: <Plus size={15} />,
+            action: () => editDeck(undefined, deck.id),
           },
           {
             label: "Scheduling settings",
@@ -125,18 +128,64 @@ export function DeckMenu({ deck }: { deck: Deck }) {
           },
           {
             label: "Move cards & delete",
-            action: () => void moveAndDelete(),
-            disabled: data.decks.length < 2 || !deck.total,
+            action: () => setMoving(true),
+            disabled:
+              !data.decks.some((candidate) => !descendants.has(candidate.id)) ||
+              !deck.total,
             separator: true,
           },
           {
             label: "Delete deck",
             icon: <Trash2 size={15} />,
-            action: () => void remove(),
+            action: () => void remove(false),
             danger: true,
           },
+          ...(hasChildren
+            ? [
+                {
+                  label: "Delete entire branch",
+                  icon: <Trash2 size={15} />,
+                  action: () => void remove(true),
+                  danger: true,
+                },
+              ]
+            : []),
         ]}
       />
+      {moving && (
+        <Modal
+          title="Move cards and delete deck"
+          description="Only cards directly in this deck will move. Its children will move up one level."
+          open
+          onClose={() => setMoving(false)}
+        >
+          <label className="field">
+            <span>Destination deck</span>
+            <select
+              value={destination}
+              onChange={(e) => setDestination(e.target.value)}
+            >
+              <option value="">Choose a deck</option>
+              {data.decks
+                .filter((candidate) => !descendants.has(candidate.id))
+                .map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>
+                    {candidate.path}
+                  </option>
+                ))}
+            </select>
+          </label>
+          <div className="modal-actions">
+            <Button onClick={() => setMoving(false)}>Cancel</Button>
+            <Button
+              disabled={!destination}
+              onClick={() => void moveAndDelete()}
+            >
+              Move and delete
+            </Button>
+          </div>
+        </Modal>
+      )}
       {settings && (
         <DeckSettingsDialog deck={deck} onClose={() => setSettings(false)} />
       )}
@@ -155,20 +204,27 @@ export function DeckTile({ deck }: { deck: Deck }) {
         <DeckArt deck={deck} mediaDir={data.mediaDir} />
         <div className="deck-tile-top">
           <span className="deck-due">
-            {deck.due ? `${number(deck.due)} to study` : "All caught up"}
+            {deck.subtreeCounts.due
+              ? `${number(deck.subtreeCounts.due)} to study`
+              : "All caught up"}
           </span>
         </div>
         <div className="deck-tile-body">
           <h2>{deck.name}</h2>
           <p>
-            {number(deck.total)} {deck.total === 1 ? "card" : "cards"}{" "}
+            {number(deck.subtreeCounts.total)}{" "}
+            {deck.subtreeCounts.total === 1 ? "card" : "cards"}{" "}
             <ArrowUpRight size={17} />
           </p>
           <Progress
-            value={deck.total ? deck.inReview / deck.total : 0}
+            value={
+              deck.subtreeCounts.total
+                ? deck.subtreeCounts.inReview / deck.subtreeCounts.total
+                : 0
+            }
             label={`${deck.name}: cards in Review`}
           />
-          <small>{number(deck.inReview)} in Review</small>
+          <small>{number(deck.subtreeCounts.inReview)} in Review</small>
         </div>
       </button>
       <div className="deck-tile-menu">
@@ -181,19 +237,6 @@ export default function Decks() {
   const { data, editDeck, importCards } = useTala();
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState("name");
-  const decks = useMemo(
-    () =>
-      data.decks
-        .filter((d) => d.name.toLowerCase().includes(search.toLowerCase()))
-        .sort((a, b) =>
-          sort === "due"
-            ? b.due - a.due
-            : sort === "recent"
-              ? b.updatedAt - a.updatedAt
-              : a.name.localeCompare(b.name),
-        ),
-    [data.decks, search, sort],
-  );
   return (
     <div className="page">
       <PageHeader
@@ -252,22 +295,7 @@ export default function Decks() {
           deck, then add a few cards.
         </Empty>
       ) : (
-        <div className="deck-grid">
-          {decks.map((deck) => (
-            <DeckTile key={deck.id} deck={deck} />
-          ))}
-          {!search && (
-            <button className="new-deck-tile" onClick={() => editDeck()}>
-              <span>
-                <Plus size={24} />
-              </span>
-              New deck<small>A little more room to grow</small>
-            </button>
-          )}
-          {!decks.length && (
-            <Empty title="No decks found">Try another name.</Empty>
-          )}
-        </div>
+        <DeckTree search={search} sort={sort} />
       )}
       <footer className="page-footer">
         <span>
@@ -283,7 +311,7 @@ export default function Decks() {
   );
 }
 export function DeckOverview({ id }: { id: string }) {
-  const { data, navigate, startStudy } = useTala();
+  const { data, navigate, startStudy, editDeck } = useTala();
   const [settings, setSettings] = useState(false);
   const deck = data.decks.find((d) => d.id === id);
   if (!deck)
@@ -297,6 +325,8 @@ export function DeckOverview({ id }: { id: string }) {
         }
       />
     );
+  const counts = deck.subtreeCounts;
+  const ancestors = deckAncestors(data.decks, deck);
   return (
     <div className="page">
       <button
@@ -305,23 +335,34 @@ export function DeckOverview({ id }: { id: string }) {
       >
         ← All decks
       </button>
+      <nav className="deck-breadcrumbs" aria-label="Deck path">
+        {ancestors.map((parent) => (
+          <button
+            key={parent.id}
+            onClick={() => void navigate({ page: "deck", id: parent.id })}
+          >
+            {parent.name} /
+          </button>
+        ))}
+        <span>{deck.name}</span>
+      </nav>
       <section className="deck-hero">
         <DeckArt deck={deck} mediaDir={data.mediaDir} />
         <div className="deck-hero-content">
           <span className="eyebrow">YOUR COLLECTION</span>
           <h1>{deck.name}</h1>
           <p>
-            {number(deck.total)} cards · {number(deck.inReview)} in Review
+            {number(counts.total)} cards · {number(counts.inReview)} in Review
           </p>
           <div className="inline">
             <Button
               variant="primary"
-              disabled={!deck.due}
+              disabled={!counts.due}
               onClick={() => void startStudy(deck.id)}
             >
               <Play size={17} />
-              {deck.due
-                ? `Study ${number(deck.due)} cards`
+              {counts.due
+                ? `Study ${number(counts.due)} cards`
                 : "Caught up for now"}
             </Button>
             <Button
@@ -336,12 +377,20 @@ export function DeckOverview({ id }: { id: string }) {
           <DeckMenu deck={deck} />
         </div>
       </section>
+      <div className="section-heading">
+        <h2>Subdecks</h2>
+        <Button onClick={() => editDeck(undefined, deck.id)}>
+          <Plus size={16} />
+          Add subdeck
+        </Button>
+      </div>
+      <DeckTree parentId={deck.id} />
       <div className="metrics-row">
         {[
-          ["New available", deck.newCount, "violet"],
-          ["Learning now", deck.learning, "amber"],
-          ["Reviews due", deck.review, "teal"],
-          ["Total cards", deck.total, "blue"],
+          ["New available", counts.newCount, "violet"],
+          ["Learning now", counts.learning, "amber"],
+          ["Reviews due", counts.review, "teal"],
+          ["Total cards", counts.total, "blue"],
         ].map(([label, value, color]) => (
           <div className="metric-card" key={label as string}>
             <span>{label}</span>
@@ -351,15 +400,15 @@ export function DeckOverview({ id }: { id: string }) {
           </div>
         ))}
       </div>
-      {deck.limitedNew + deck.limitedReview > 0 && (
+      {counts.limitedNew + counts.limitedReview > 0 && (
         <div className="notice">
-          Daily limits are holding back {number(deck.limitedNew)} new and{" "}
-          {number(deck.limitedReview)} review cards. Learning repetitions remain
-          available.{" "}
+          Daily limits are holding back {number(counts.limitedNew)} new and{" "}
+          {number(counts.limitedReview)} review cards. Learning repetitions
+          remain available.{" "}
           <button onClick={() => setSettings(true)}>Adjust limits</button>
         </div>
       )}
-      {!deck.total ? (
+      {!counts.total ? (
         <Empty
           title="Your first card is a small beginning"
           action={
@@ -379,11 +428,11 @@ export function DeckOverview({ id }: { id: string }) {
           <div>
             <h2>A little progress, every day</h2>
             <p>
-              {number(deck.inReview)} of {number(deck.total)} cards are in the
-              Review stage.
+              {number(counts.inReview)} of {number(counts.total)} cards are in
+              the Review stage.
             </p>
             <Progress
-              value={deck.inReview / deck.total}
+              value={counts.inReview / counts.total}
               label="Cards in Review"
             />
           </div>

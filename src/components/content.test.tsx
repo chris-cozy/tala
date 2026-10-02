@@ -17,7 +17,9 @@ vi.mock("@tauri-apps/api/core", () => ({
     `asset://localhost/${encodeURIComponent(path)}`,
 }));
 
-const context = { data: { mediaDir: "/isolated/media" } } as TalaContextValue;
+const context = {
+  data: { mediaDir: "/isolated/media", preferences: { audioAutoplay: false } },
+} as TalaContextValue;
 
 describe("card content and preview", () => {
   it.each(["normal", "reversed", "typed"] as const)(

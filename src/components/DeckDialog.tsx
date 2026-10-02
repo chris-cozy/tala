@@ -4,6 +4,7 @@ import type { Deck } from "../bindings/Deck";
 import { useTala, Field } from "../lib/context";
 import { mediaUrl, pickFile, rpc } from "../lib/api";
 import { Button, Modal } from "./ui";
+import { branchIds } from "../lib/decks";
 export const deckColors = ["violet", "teal", "blue", "rose", "amber", "slate"];
 export function DeckArt({
   deck,
@@ -36,12 +37,18 @@ export function DeckArt({
 }
 export default function DeckDialog({
   deck,
+  parentId: initialParentId,
   onClose,
 }: {
   deck?: Deck;
+  parentId?: string;
   onClose: () => void;
 }) {
   const { data, run, navigate } = useTala();
+  const [parentId, setParentId] = useState(
+    deck?.parentId ?? initialParentId ?? "",
+  );
+  const excluded = deck ? branchIds(data.decks, deck.id) : new Set<string>();
   const [name, setName] = useState(deck?.name ?? "");
   const [color, setColor] = useState(deck?.color ?? "violet");
   const [cover, setCover] = useState<string | null>(deck?.cover ?? null);
@@ -64,6 +71,7 @@ export default function DeckDialog({
           payload: {
             id: deck?.id ?? null,
             name,
+            parentId: parentId || null,
             color,
             cover,
             settings: deck?.settings ?? data.preferences.defaults,
@@ -108,6 +116,21 @@ export default function DeckDialog({
                 onChange={(e) => setName(e.target.value)}
                 maxLength={200}
               />
+            </Field>
+            <Field label="Parent deck">
+              <select
+                value={parentId}
+                onChange={(e) => setParentId(e.target.value)}
+              >
+                <option value="">None · top-level deck</option>
+                {data.decks
+                  .filter((candidate) => !excluded.has(candidate.id))
+                  .map((candidate) => (
+                    <option key={candidate.id} value={candidate.id}>
+                      {candidate.path}
+                    </option>
+                  ))}
+              </select>
             </Field>
             <Field label="Color">
               <div className="color-options">

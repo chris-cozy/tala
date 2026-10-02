@@ -108,6 +108,7 @@ pub struct Preferences {
     pub scale: u32,
     pub backup_enabled: bool,
     pub backup_retention: u32,
+    pub audio_autoplay: bool,
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -116,8 +117,23 @@ impl Default for Preferences {
             scale: 100,
             backup_enabled: true,
             backup_retention: 10,
+            audio_autoplay: true,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, Default)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct DeckCounts {
+    pub total: u32,
+    pub new_count: u32,
+    pub learning: u32,
+    pub review: u32,
+    pub due: u32,
+    pub in_review: u32,
+    pub limited_new: u32,
+    pub limited_review: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -126,6 +142,9 @@ impl Default for Preferences {
 pub struct Deck {
     pub id: String,
     pub name: String,
+    pub parent_id: Option<String>,
+    pub path: String,
+    pub subtree_counts: DeckCounts,
     pub cover: Option<String>,
     pub color: String,
     pub settings: DeckSettings,
@@ -149,6 +168,8 @@ pub struct Deck {
 pub struct DeckInput {
     pub id: Option<String>,
     pub name: String,
+    #[serde(default)]
+    pub parent_id: Option<String>,
     pub cover: Option<String>,
     pub color: String,
     pub settings: DeckSettings,
@@ -214,6 +235,7 @@ impl CardView {
 pub struct BrowseQuery {
     pub search: String,
     pub deck: Option<String>,
+    pub only_this_deck: bool,
     pub tag: Option<String>,
     pub state: Option<String>,
     pub leech: bool,
@@ -426,6 +448,59 @@ pub struct ImportResult {
     pub imported: u32,
     pub updated: u32,
     pub skipped: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct AnkiImportConfig {
+    pub path_token: String,
+    pub parent_id: Option<String>,
+    pub duplicates: String,
+    pub skip_affected: bool,
+    pub destinations: std::collections::BTreeMap<String, String>,
+    pub preview_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct AnkiDestination {
+    pub path: String,
+    pub cards: u32,
+    pub matches: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct AnkiPreviewCard {
+    pub number: u32,
+    pub deck_path: String,
+    pub front: Value,
+    pub back: Value,
+    pub behavior: Behavior,
+    pub tags: Vec<String>,
+    pub duplicate: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct AnkiImportPreview {
+    pub digest: String,
+    pub total: u32,
+    pub duplicates: u32,
+    pub affected: u32,
+    pub audio_files: u32,
+    pub audio_assets: u32,
+    pub image_files: u32,
+    pub decks: Vec<AnkiDestination>,
+    pub cards: Vec<AnkiPreviewCard>,
+    pub warnings: Vec<String>,
+    pub issues: Vec<String>,
+    pub blocking_errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

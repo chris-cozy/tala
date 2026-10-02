@@ -89,14 +89,14 @@ impl PreparedArchive {
                     && !media.starts_with(&format!("{hash}."))
                 {
                     return Err(AppError::invalid(
-                        "An image has changed on disk. Run an integrity check before backing up.",
+                        "A media file has changed on disk. Run an integrity check before backing up.",
                     ));
                 }
                 hashes.insert(name.clone(), hash);
             }
             let manifest = Manifest {
                 format_version: 1,
-                schema_version: 1,
+                schema_version: crate::hierarchy::SCHEMA_VERSION,
                 created_at: self.created_at,
                 files: hashes,
             };
@@ -161,7 +161,7 @@ impl Store {
             let source = self.media_dir().join(&media_id);
             if !source.is_file() {
                 return Err(AppError::invalid(
-                    "A referenced image is missing. Run an integrity check before creating a complete backup.",
+                    "A referenced media file is missing. Run an integrity check before creating a complete backup.",
                 ));
             }
             let destination = snapshot.directory.join("media").join(&media_id);
@@ -343,7 +343,7 @@ impl Store {
         manifest_entry.read_to_end(&mut bytes)?;
         drop(manifest_entry);
         let manifest: Manifest = serde_json::from_slice(&bytes)?;
-        if manifest.format_version != 1 || manifest.schema_version != 1 {
+        if manifest.format_version != 1 || ![1, 2].contains(&manifest.schema_version) {
             return Err(AppError::invalid(
                 "This backup requires a different version of Tala.",
             ));
@@ -410,17 +410,16 @@ impl Store {
                 ));
             }
         }
-        let conn = Connection::open_with_flags(
-            stage.join("tala.sqlite3"),
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )?;
+        let mut conn = Connection::open(stage.join("tala.sqlite3"))?;
         let check: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
         let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if check != "ok" || version != 1 {
+        if check != "ok" || version != manifest.schema_version {
             return Err(AppError::invalid(
                 "The backup database is damaged or unsupported.",
             ));
         }
+        crate::integrity::validate_schema(&conn)?;
+        crate::hierarchy::migrate(&mut conn)?;
         let report = crate::integrity::check(&conn, &stage.join("media"))?;
         if !report.healthy {
             return Err(AppError::invalid(

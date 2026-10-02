@@ -343,30 +343,37 @@ export default function StatisticsPage() {
         <div className="panel-heading">
           <div>
             <h2>Across your decks</h2>
-            <p>Cards in the long-term Review stage, not a measure of mastery</p>
+            <p>Review cards across each top-level branch, including subdecks</p>
           </div>
         </div>
         {s.decks.length ? (
-          s.decks.map((deck) => (
-            <button
-              key={deck.id}
-              className="deck-progress-row"
-              onClick={() => void navigate({ page: "deck", id: deck.id })}
-            >
-              <span>
-                <i className={`color-dot tiny color-${deck.color}`} />
-                {deck.name}
-              </span>
-              <Progress
-                value={deck.total ? deck.inReview / deck.total : 0}
-                label={`${deck.name} cards in Review`}
-              />
-              <small>
-                {number(deck.inReview)} / {number(deck.total)} in Review
-              </small>
-              <small>{number(deck.due)} ready</small>
-            </button>
-          ))
+          s.decks
+            .filter((deck) => !deck.parentId)
+            .map((deck) => (
+              <button
+                key={deck.id}
+                className="deck-progress-row"
+                onClick={() => void navigate({ page: "deck", id: deck.id })}
+              >
+                <span>
+                  <i className={`color-dot tiny color-${deck.color}`} />
+                  {deck.path}
+                </span>
+                <Progress
+                  value={
+                    deck.subtreeCounts.total
+                      ? deck.subtreeCounts.inReview / deck.subtreeCounts.total
+                      : 0
+                  }
+                  label={`${deck.path} cards in Review`}
+                />
+                <small>
+                  {number(deck.subtreeCounts.inReview)} /{" "}
+                  {number(deck.subtreeCounts.total)} in Review
+                </small>
+                <small>{number(deck.subtreeCounts.due)} ready</small>
+              </button>
+            ))
         ) : (
           <p className="panel-footnote">
             Create a deck to begin tracking progress.

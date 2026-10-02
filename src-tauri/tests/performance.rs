@@ -13,6 +13,7 @@ fn collection_scale_acceptance() {
     store.clock_override = Some(clock);
     let deck = store
         .save_deck(DeckInput {
+            parent_id: None,
             id: None,
             name: "Performance fixture".into(),
             cover: None,

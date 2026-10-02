@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 
 async function command(action: string, payload?: unknown): Promise<any> {
   return browser.tauri.execute(
@@ -53,6 +54,94 @@ async function caretAtEnd(selector: string) {
     selection.addRange(range);
     document.dispatchEvent(new Event("selectionchange"));
   }, selector);
+}
+
+function makeWav(): Buffer {
+  const sampleRate = 22050;
+  const sampleCount = sampleRate * 5;
+  const data = Buffer.alloc(sampleCount * 2);
+  for (let i = 0; i < sampleCount; i++) {
+    const envelope = Math.min(1, i / 400, (sampleCount - i) / 400);
+    data.writeInt16LE(
+      Math.round(
+        Math.sin((2 * Math.PI * 440 * i) / sampleRate) * 5000 * envelope,
+      ),
+      i * 2,
+    );
+  }
+  const wav = Buffer.alloc(44 + data.length);
+  wav.write("RIFF", 0);
+  wav.writeUInt32LE(wav.length - 8, 4);
+  wav.write("WAVEfmt ", 8);
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(sampleRate, 24);
+  wav.writeUInt32LE(sampleRate * 2, 28);
+  wav.writeUInt16LE(2, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write("data", 36);
+  wav.writeUInt32LE(data.length, 40);
+  data.copy(wav, 44);
+  return wav;
+}
+
+function createAnkiFixture(file: string, audio: Buffer) {
+  writeFileSync(`${file}.wav`, audio);
+  const python = String.raw`
+import json, sqlite3, sys, zipfile
+database, package, audio_path = sys.argv[1:]
+db = sqlite3.connect(database)
+db.executescript("""
+CREATE TABLE col(id INTEGER, models TEXT, decks TEXT);
+CREATE TABLE notes(id INTEGER PRIMARY KEY, guid TEXT, mid INTEGER, flds TEXT, tags TEXT);
+CREATE TABLE cards(id INTEGER PRIMARY KEY, nid INTEGER, ord INTEGER, did INTEGER, odid INTEGER);
+""")
+models = {"1": {"type": 0, "flds": [{"name": "Front", "ord": 0}, {"name": "Back", "ord": 1}], "tmpls": [{"ord": 0, "qfmt": "{{Front}}", "afmt": "{{FrontSide}}<hr>{{Back}}"}]}}
+decks = {"1": {"name": "UI package::Audio lesson"}}
+db.execute("INSERT INTO col VALUES(1, ?, ?)", (json.dumps(models), json.dumps(decks)))
+db.execute("INSERT INTO notes VALUES(10, 'ui-audio-guid', 1, ?, '')", ("Anki UI import prompt\x1f[sound:voice.wav]",))
+db.execute("INSERT INTO cards VALUES(20, 10, 0, 1, 0)")
+db.commit(); db.close()
+with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED) as z:
+    z.write(database, "collection.anki2")
+    z.writestr("media", json.dumps({"0": "voice.wav"}))
+    z.write(audio_path, "0")
+`;
+  const result = spawnSync(
+    "python3",
+    ["-c", python, `${file}.sqlite3`, file, `${file}.wav`],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    result.status,
+    0,
+    result.stderr || "Could not generate Anki fixture",
+  );
+}
+
+function extractReferenceMp3(folder: string): string | null {
+  const packagePath = process.env.TALA_REFERENCE_APKG;
+  if (!packagePath || !existsSync(packagePath)) return null;
+  const output = path.join(folder, "reference-audio.mp3");
+  const python = String.raw`
+import json, sys, zipfile
+source, output = sys.argv[1:]
+with zipfile.ZipFile(source) as package:
+    mapping = json.loads(package.read("media"))
+    clips = [(package.getinfo(name).file_size, name) for name, original in mapping.items() if original.lower().endswith(".mp3") and package.getinfo(name).file_size <= 2000000]
+    if not clips: raise SystemExit("Reference APKG has no MP3 media")
+    with open(output, "wb") as target: target.write(package.read(max(clips)[1]))
+`;
+  const result = spawnSync("python3", ["-c", python, packagePath, output], {
+    encoding: "utf8",
+  });
+  assert.equal(
+    result.status,
+    0,
+    result.stderr || "Could not extract reference MP3",
+  );
+  return output;
 }
 
 describe("Tala native collection", () => {
@@ -325,7 +414,9 @@ describe("Tala native collection", () => {
     await browser.refresh();
     await $("h1").waitForDisplayed();
     await $('nav button[title="Decks"]').click();
-    await browser.waitUntil(async () => (await $$(".deck-tile").length) === 6);
+    await browser.waitUntil(
+      async () => (await $$('[role="tree"] > [role="treeitem"]')).length === 6,
+    );
     await browser.saveScreenshot("artifacts/e2e/08-decks.png");
     await $('nav button[title="Browse"]').click();
     await $('input[aria-label="Search cards"]').setValue("equation");
@@ -448,6 +539,321 @@ describe("Tala native collection", () => {
     );
     assert.equal((await command("integrity")).healthy, true);
   });
+  it("navigates nested decks, scopes browsing, and imports an audio Anki package beneath a parent", async () => {
+    const initial = await command("bootstrap");
+    const biology = initial.decks.find((deck: any) => deck.name === "Biology");
+    assert.ok(biology);
+
+    await $('nav button[title="Decks"]').click();
+    await $(`[aria-label="Open ${biology.name}"]`).click();
+    await $("button=Add subdeck").click();
+    await $('[role="dialog"] input').setValue("Genetics");
+    await $("button=Create deck").click();
+    await $("h1=Genetics").waitForDisplayed();
+    const decksAfterCreate = await command("bootstrap");
+    const genetics = decksAfterCreate.decks.find(
+      (deck: any) => deck.name === "Genetics" && deck.parentId === biology.id,
+    );
+    assert.ok(genetics);
+    await $("button=Add card").click();
+    await $('[aria-label="Front"][contenteditable="true"]').setValue(
+      "Genetics only deck fixture",
+    );
+    await $('[aria-label="Back"][contenteditable="true"]').setValue(
+      "A nested answer",
+    );
+    const addAnother = $("label*=Add another after saving").$("input");
+    if (await addAnother.isSelected()) await addAnother.click();
+    await $("button*=Save card").click();
+    await $("h1=Genetics").waitForDisplayed();
+
+    await $('nav button[title="Decks"]').click();
+    await $('[aria-label="Search decks"]').setValue("Genetics");
+    await $("[aria-label='Open Biology::Genetics']").waitForDisplayed();
+    await browser.saveScreenshot("artifacts/e2e/15-hierarchy.png");
+    await $("[aria-label='Open Biology::Genetics']").click();
+    await $("h1=Genetics").waitForDisplayed();
+    const breadcrumbs = $('[aria-label="Deck path"]');
+    assert.match(await breadcrumbs.getText(), /Biology.*Genetics/);
+    await breadcrumbs.$("button").click();
+    await $("h1=Biology").waitForDisplayed();
+
+    await $('nav button[title="Browse"]').click();
+    await selectOption('[aria-label="Filter by deck"]', biology.id);
+    const browseCount = async () => {
+      const label = await $(".browser-actions .small.muted").getText();
+      const match = label.match(/([\d,]+) cards/);
+      assert.ok(match, `Unexpected browse count label: ${label}`);
+      return Number(match[1].replaceAll(",", ""));
+    };
+    await browser.waitUntil(async () => (await browseCount()) > 0);
+    const subtreeCount = await browseCount();
+    await $("label*=Only this deck").$("input").click();
+    await browser.waitUntil(async () => (await browseCount()) < subtreeCount);
+    assert.ok((await browseCount()) >= 1);
+
+    const folder = process.env.TALA_TEST_DATA_DIR!;
+    const audio = makeWav();
+    const packagePath = path.join(folder, "ui-audio.apkg");
+    createAnkiFixture(packagePath, audio);
+    await command("test_grant", {
+      path: packagePath,
+      purpose: "test-pick:import",
+    });
+    await $('nav button[title="Decks"]').click();
+    await $("[aria-label='Open Biology']").waitForDisplayed();
+    await browser.execute(() =>
+      (
+        document.querySelector(
+          '[aria-label="Options for Biology"]',
+        ) as HTMLElement
+      ).focus(),
+    );
+    await browser.keys("Enter");
+    await $('[role="menu"]').waitForDisplayed();
+    await $('//*[@role="menuitem" and contains(.,"Import cards")]').click();
+    await $("button=Choose file").click();
+    await $("h3=Preview").waitForDisplayed();
+    await browser.waitUntil(async () =>
+      (await $(".import-preview").getText()).includes("1 audio files"),
+    );
+    assert.equal(
+      await $("[role='dialog'] .form-grid select").getValue(),
+      biology.id,
+    );
+    await browser.waitUntil(async () =>
+      (await $(".anki-destinations").getText()).includes("UI package"),
+    );
+    assert.match(await $(".anki-destinations").getText(), /Audio lesson/);
+    await browser.saveScreenshot("artifacts/e2e/16-anki-preview.png");
+    await $("button=Import cards").click();
+    await browser.waitUntil(
+      async () => !(await $('[role="dialog"]').isExisting()),
+    );
+    const afterImport = await command("bootstrap");
+    const packageDeck = afterImport.decks.find(
+      (deck: any) => deck.name === "UI package" && deck.parentId === biology.id,
+    );
+    const audioLesson = afterImport.decks.find(
+      (deck: any) =>
+        deck.name === "Audio lesson" && deck.parentId === packageDeck?.id,
+    );
+    assert.ok(packageDeck && audioLesson);
+    const imported = await command("browse", {
+      search: "Anki UI import prompt",
+      deck: audioLesson.id,
+      onlyThisDeck: true,
+      tag: null,
+      state: null,
+      leech: false,
+      trash: false,
+      sort: "created",
+      descending: false,
+      offset: 0,
+      limit: 10,
+    });
+    assert.equal(imported.total, 1);
+    const importedCard = await command("get_card", {
+      cardId: imported.cards[0].id,
+    });
+    assert.match(JSON.stringify(importedCard.back), /"type":"audio"/);
+    assert.equal((await command("integrity")).healthy, true);
+  });
+
+  it("attaches audio, restores editor deletion with undo, persists autoplay, and keeps study controls safe", async () => {
+    const folder = process.env.TALA_TEST_DATA_DIR!;
+    const wavPath = path.join(folder, "e2e-tone.wav");
+    writeFileSync(wavPath, makeWav());
+    const mp3Path = extractReferenceMp3(folder);
+    const audioPath = mp3Path ?? wavPath;
+    const audioName = path.basename(audioPath);
+    const defaults = (await command("bootstrap")).preferences.defaults;
+    const deckId = await command("save_deck", {
+      id: null,
+      name: "E2E audio study",
+      parentId: null,
+      color: "teal",
+      cover: null,
+      settings: defaults,
+    });
+    await browser.refresh();
+    await $("h1").waitForDisplayed();
+    await $('nav button[title="Decks"]').click();
+    await $(`[aria-label="Open E2E audio study"]`).click();
+    await $("h1=E2E audio study").waitForDisplayed();
+    await $("button=Add card").click();
+    const front = $('[aria-label="Front"][contenteditable="true"]');
+    await front.waitForDisplayed();
+    await front.setValue("Audio study question");
+    for (let clip = 0; clip < 2; clip++) {
+      await command("test_grant", {
+        path: audioPath,
+        purpose: "test-pick:audio",
+      });
+      await $(
+        '[aria-label="Front formatting"] [aria-label="Attach audio"]',
+      ).click();
+      await browser.waitUntil(
+        async () => (await $$(".audio-clip")).length === clip + 1,
+      );
+    }
+    await $("button*=Save card").waitForEnabled();
+    await $('[aria-label^="Remove "]').click();
+    await browser.waitUntil(async () => (await $$(".audio-clip")).length === 1);
+    await $('[aria-label="Undo Front edit"]').click();
+    await browser.waitUntil(async () => (await $$(".audio-clip")).length === 2);
+    await $('[aria-label="Back"][contenteditable="true"]').setValue(
+      "Audio study answer",
+    );
+    await $("button*=Save card").click();
+    await browser.waitUntil(
+      async () =>
+        (await command("bootstrap")).decks.find(
+          (deck: any) => deck.id === deckId,
+        ).total === 1,
+    );
+    const audioQuery = await command("browse", {
+      search: "Audio study question",
+      deck: deckId,
+      onlyThisDeck: true,
+      tag: null,
+      state: null,
+      leech: false,
+      trash: false,
+      sort: "created",
+      descending: false,
+      offset: 0,
+      limit: 10,
+    });
+    const audioCard = await command("get_card", {
+      cardId: audioQuery.cards[0].id,
+    });
+    assert.equal(audioQuery.total, 1);
+    const audioNodes = audioCard.front.content.filter(
+      (node: any) => node.type === "audio",
+    );
+    assert.equal(audioNodes.length, 2);
+    assert.ok(audioNodes.every((node: any) => node.attrs.mediaId));
+    assert.match(JSON.stringify(audioCard.front), /Audio study question/);
+
+    await $('nav button[title="Settings"]').click();
+    const autoplay = $('[aria-label="Auto-play card audio"]');
+    await autoplay.waitForDisplayed();
+    if (await autoplay.isSelected()) await autoplay.click();
+    await $("button=Save preferences").click();
+    await browser.waitUntil(
+      async () => !(await command("bootstrap")).preferences.audioAutoplay,
+    );
+    await autoplay.click();
+    await $("button=Save preferences").click();
+    await browser.waitUntil(
+      async () => (await command("bootstrap")).preferences.audioAutoplay,
+    );
+
+    await $('nav button[title="Decks"]').click();
+    await $(`[aria-label="Open E2E audio study"]`).click();
+    await $("button*=Study").click();
+    await $(".study-card").waitForDisplayed();
+    const player = $(`audio[aria-label="${audioName}"]`);
+    await player.waitForDisplayed();
+    await browser.waitUntil(
+      async () => (await player.getProperty("readyState")) >= 2,
+    );
+    await browser.execute((label) => {
+      (window as any).__talaAudioPlayers = [
+        ...document.querySelectorAll(`audio[aria-label="${label}"]`),
+      ];
+    }, audioName);
+    await browser.waitUntil(
+      async () => (await player.getProperty("paused")) === false,
+    );
+    const replayButtons = await $$(`[aria-label="Replay ${audioName}"]`);
+    const audioPlayers = await $$(`audio[aria-label="${audioName}"]`);
+    await replayButtons[replayButtons.length - 1].click();
+    await browser.waitUntil(
+      async () =>
+        await browser.execute(
+          () =>
+            (window as any).__talaAudioPlayers?.[0]?.paused &&
+            !(window as any).__talaAudioPlayers?.[1]?.paused,
+        ),
+    );
+    await browser.waitUntil(
+      async () => (await audioPlayers[1].getProperty("currentTime")) > 0.1,
+    );
+    const duration = await audioPlayers[1].getProperty("duration");
+    assert.ok(Number.isFinite(duration) && duration > 0);
+    await browser.execute(() => window.dispatchEvent(new Event("blur")));
+    await browser.waitUntil(
+      async () =>
+        await browser.execute(() =>
+          (window as any).__talaAudioPlayers?.every(
+            (audio: HTMLAudioElement) => audio.paused,
+          ),
+        ),
+    );
+    assert.equal(await $$(".grade-button").length, 0);
+    assert.match(await $(".study-card").getText(), /QUESTION/);
+    await browser.saveScreenshot("artifacts/e2e/17-audio-study.png");
+
+    await replayButtons[replayButtons.length - 1].click();
+    await browser.waitUntil(
+      async () =>
+        await browser.execute(
+          () => !(window as any).__talaAudioPlayers?.[1]?.paused,
+        ),
+    );
+    await browser.waitUntil(
+      async () => (await audioPlayers[1].getProperty("currentTime")) > 0.1,
+    );
+    await browser.execute(() =>
+      (
+        document.querySelector(
+          '[aria-label="Study card options"]',
+        ) as HTMLElement
+      ).focus(),
+    );
+    await browser.keys("Enter");
+    await $('[role="menu"]').waitForDisplayed();
+    await $('//*[@role="menuitem" and contains(.,"Card information")]').click();
+    await $('[role="dialog"]').waitForDisplayed();
+    await browser.waitUntil(
+      async () =>
+        await browser.execute(() =>
+          (window as any).__talaAudioPlayers?.every(
+            (audio: HTMLAudioElement) => audio.paused,
+          ),
+        ),
+    );
+    await $('[aria-label="Close dialog"]').click();
+    await browser.waitUntil(
+      async () => !(await $('[role="dialog"]').isExisting()),
+    );
+    assert.equal(await $$(".grade-button").length, 0);
+    assert.match(await $(".study-card").getText(), /QUESTION/);
+    await replayButtons[replayButtons.length - 1].click();
+    await browser.waitUntil(
+      async () =>
+        await browser.execute(
+          () => !(window as any).__talaAudioPlayers?.[1]?.paused,
+        ),
+    );
+    await $("button*=Reveal answer").click();
+    await $(".grade-button").waitForDisplayed();
+    await browser.waitUntil(
+      async () =>
+        await browser.execute(() =>
+          (window as any).__talaAudioPlayers?.every(
+            (audio: HTMLAudioElement) => audio.paused,
+          ),
+        ),
+    );
+    assert.equal(await $$(".grade-button").length, 4);
+    await $("button=Leave session").click();
+    await $("h1").waitForDisplayed();
+    assert.equal((await command("integrity")).healthy, true);
+  });
+
   it("protects unsaved cards from navigation and native quit, and supports 125% scale at minimum size", async () => {
     await $('nav button[title="Add card"]').click();
     await $('[aria-label="Front"][contenteditable="true"]').setValue(
@@ -488,7 +894,7 @@ describe("Tala native collection", () => {
       `Scaled frame does not fill window: ${JSON.stringify(frame)}`,
     );
     for (const [page, selector] of [
-      ["Decks", ".deck-grid"],
+      ["Decks", ".deck-tree"],
       ["Statistics", ".statistics-page"],
       ["Add card", ".editor-page"],
       ["Browse", ".browse-page"],
