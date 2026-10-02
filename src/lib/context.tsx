@@ -24,7 +24,7 @@ export interface TalaContextValue {
   confirm: (options: ConfirmOptions) => Promise<boolean>;
   ask: (title: string, label: string, value?: string) => Promise<string | null>;
   notify: (message: string, error?: boolean) => void;
-  editDeck: (deck?: Deck) => void;
+  editDeck: (deck?: Deck, parentId?: string) => void;
   startStudy: (deckId?: string) => Promise<void>;
   setDirty: (dirty: boolean) => void;
   importCards: (deckId?: string) => void;

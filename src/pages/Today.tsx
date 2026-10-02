@@ -21,8 +21,12 @@ export default function TodayPage() {
     (n, d) => n + d.limitedNew + d.limitedReview,
     0,
   );
-  const recent = [...data.decks]
-    .sort((a, b) => b.due - a.due || b.updatedAt - a.updatedAt)
+  const recent = data.decks
+    .filter((deck) => !deck.parentId)
+    .sort(
+      (a, b) =>
+        b.subtreeCounts.due - a.subtreeCounts.due || b.updatedAt - a.updatedAt,
+    )
     .slice(0, 4);
   return (
     <div className="page today-page">
@@ -208,7 +212,7 @@ export default function TodayPage() {
             {
               icon: BookOpen,
               title: "Put it in your own words",
-              text: "Create cards with text, images, and equations.",
+              text: "Create cards with text, images, audio, and equations.",
             },
             {
               icon: Clock3,

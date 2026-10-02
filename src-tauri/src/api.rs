@@ -38,6 +38,8 @@ pub enum Command {
     DeleteDeck {
         deck_id: String,
         move_to: Option<String>,
+        #[serde(default)]
+        branch: bool,
     },
     SaveNote(NoteInput),
     GetCard {
@@ -69,13 +71,23 @@ pub enum Command {
     AttachBytes {
         bytes: Vec<u8>,
     },
+    AttachAudioFile {
+        token: String,
+    },
+    AttachAudioBytes {
+        bytes: Vec<u8>,
+    },
     PreviewImport(ImportConfig),
     CommitImport(ImportConfig),
+    PreviewAnki(AnkiImportConfig),
+    CommitAnki(AnkiImportConfig),
     ExportDelimited {
         token: String,
         format: String,
         deck_id: Option<String>,
         ids: Vec<String>,
+        #[serde(default)]
+        only_this_deck: bool,
     },
     ExportNative {
         token: String,
@@ -127,7 +139,11 @@ pub fn execute(store: &mut Store, request: Command) -> Result<Value> {
         )),
         Command::Bootstrap => encode(store.bootstrap()?),
         Command::SaveDeck(input) => encode(store.save_deck(input)?),
-        Command::DeleteDeck { deck_id, move_to } => encode(store.delete_deck(&deck_id, move_to)?),
+        Command::DeleteDeck {
+            deck_id,
+            move_to,
+            branch,
+        } => encode(store.delete_deck_scope(&deck_id, move_to, branch)?),
         Command::SaveNote(input) => encode(store.save_note(input)?),
         Command::GetCard { card_id } => encode(store.card(&card_id)?),
         Command::Browse(query) => encode(store.browse(query)?),
@@ -142,14 +158,19 @@ pub fn execute(store: &mut Store, request: Command) -> Result<Value> {
         Command::SavePreferences(input) => encode(store.save_preferences(input)?),
         Command::AttachFile { token } => encode(store.attach_image_file(&token)?),
         Command::AttachBytes { bytes } => encode(store.attach_image(&bytes)?),
+        Command::AttachAudioFile { token } => encode(store.attach_audio_file(&token)?),
+        Command::AttachAudioBytes { bytes } => encode(store.attach_audio(&bytes)?),
         Command::PreviewImport(config) => encode(store.preview_import(&config)?),
         Command::CommitImport(config) => encode(store.commit_import(config)?),
+        Command::PreviewAnki(config) => encode(store.preview_anki(&config)?),
+        Command::CommitAnki(config) => encode(store.commit_anki(config)?),
         Command::ExportDelimited {
             token,
             format,
             deck_id,
             ids,
-        } => encode(store.export_delimited(&token, &format, deck_id, ids)?),
+            only_this_deck,
+        } => encode(store.export_delimited_scope(&token, &format, deck_id, ids, only_this_deck)?),
         Command::ExportNative { token } => encode(store.export_native(&token)?),
         Command::Backups => encode(store.backups()?),
         Command::CreateBackup => encode(store.create_backup(false)?),
@@ -242,7 +263,7 @@ pub async fn dispatch(
         .map_err(|_| AppError::storage("Recovery was interrupted. The preserved files remain in the data folder."))?;
     }
     let label = match &request {
-        Command::CommitImport(_) => Some("Importing notes"),
+        Command::CommitImport(_) | Command::CommitAnki(_) => Some("Importing notes"),
         Command::ExportNative { .. } | Command::ExportDelimited { .. } => {
             Some("Exporting collection")
         }
@@ -292,8 +313,9 @@ pub async fn dispatch(
 
 fn file_kind(purpose: &str, saving: bool) -> Result<(&'static str, Vec<&'static str>)> {
     match (purpose, saving) {
+        ("audio", false) => Ok(("Audio", vec!["mp3", "wav"])),
         ("image", false) => Ok(("Images", vec!["png", "jpg", "jpeg", "webp", "gif"])),
-        ("import", false) => Ok(("Flashcards", vec!["csv", "tsv"])),
+        ("import", false) => Ok(("Flashcards", vec!["csv", "tsv", "apkg"])),
         ("restore", false) | ("native", true) => Ok(("Tala collection", vec!["tala"])),
         ("delimited", true) => Ok(("Flashcards", vec!["csv", "tsv"])),
         ("diagnostics", true) => Ok(("Diagnostic report", vec!["json"])),

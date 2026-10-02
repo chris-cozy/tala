@@ -20,12 +20,13 @@ These native app captures use disposable test collections, not personal study da
 
 - **Rich flashcards:** Normal, Reversed, and Type in the Answer behaviors, with bold/italic/underline, lists, headings, code, links, colors, subscript/superscript, and inline or display mathematics.
 - **Local images:** Attach PNG, JPEG, WebP, and GIF images from disk or paste an image from the clipboard. Images are copied into the collection; their original location is not needed afterward. Individual images are limited to 20 MB and 40 million pixels.
-- **Decks and tags:** Flat decks with optional cover artwork, per-deck scheduling, normalized tags, search, sorting, and bulk organization.
+- **Nested decks and tags:** Expandable deck trees with studyable parents, optional artwork, shared daily limits, normalized tags, search, sorting, and bulk organization.
+- **Local audio:** Attach or drop MP3 and PCM WAV files up to 20 MB. Cards can contain several clips or audio alone. Study and preview play visible-side clips in order; automatic playback is optional in General settings.
 - **Spaced repetition:** FSRS 6 memory scheduling, configurable learning/relearning steps, desired retention, daily new/review limits, ordering, maximum intervals, and leech handling.
 - **Focused study:** Reveal before grading with Again, Hard, Good, or Easy; keyboard controls, typed-answer comparison, session progress, and waiting states for later learning repetitions. Typed comparisons never choose your grade for you.
 - **Collection management:** Searchable card browser, review history, manual due dates, reset/reschedule, suspension, burying until tomorrow, undo, and Recently Deleted.
 - **Study history:** Review counts, recall rate, study time, streaks, learning stages, deck progress, and a 14-day due forecast.
-- **Transfers and recovery:** CSV/TSV import with mapping, preview, and duplicate policies; plain-text export; complete `.tala` archives; automatic/manual backups; integrity checks; and repair of derived indexes.
+- **Transfers and recovery:** Anki package import with nested decks, static template conversion, audio, previews, and duplicate policies; CSV/TSV import with mapping; plain-text export; complete `.tala` archives; automatic/manual backups; integrity checks; and repair of derived indexes.
 - **Desktop conveniences:** Remembered window geometry, interface scaling, dark appearance, reduced-motion support, and confirmation before abandoning unsaved card edits.
 
 Each Basic note produces one card. Changing its text, behavior, tags, or deck preserves that card's scheduling and review history.
@@ -49,7 +50,7 @@ During study, **Space** reveals an answer and **1–4** grade it after reveal. *
 
 ## Local storage and privacy
 
-Tala stores rich content as validated **TipTap JSON in SQLite**, alongside schedules, preferences, tags, and review history. It does **not** store Markdown journal files. Images and deck artwork are separate content-addressed files.
+Tala stores rich content as validated **TipTap JSON in SQLite**, alongside schedules, preferences, tags, and review history. It does **not** store Markdown journal files. Images, audio, and deck artwork are separate content-addressed files.
 
 The normal data root on macOS is:
 
@@ -64,7 +65,7 @@ The normal data root on macOS is:
 
 **Settings → Data & backups** shows the exact path and opens the folder in Finder. SQLite may create `-wal` and `-shm` companions while the app is running. Do not delete these or edit/replace the database while Tala is open. Use the built-in export/restore controls for transfers.
 
-- Authoring, search, study, images, mathematics, statistics, import/export, and backups work offline. Fonts and rendering code are bundled; the installed app needs no development server.
+- Authoring, search, study, images, audio, mathematics, statistics, import/export, and backups work offline. Fonts and rendering code are bundled; the installed app needs no development server.
 - There are no accounts, cloud synchronization, analytics, or automatic uploads. No API keys or environment file are required for normal use or development.
 - User-activated web/email links open in your default external application. Those destinations may need internet access and have their own privacy practices. Remote images, videos, and YouTube embeds are not supported.
 - The **Saved locally / Saved on this device** label describes local persistence. It is not a connectivity or cloud-sync indicator.
@@ -79,9 +80,23 @@ Automatic backups are enabled by default. Tala checks every 30 seconds and creat
 
 If the collection cannot open, startup recovery can restore a selected archive while preserving the original database, WAL, and media under `recovery-preserved/`. Keep those files until recovery has been confirmed.
 
-**CSV/TSV** is for plain-text exchange. Export includes Front, Back, Behavior, Deck, and semicolon-separated Tags, but not rich formatting, image bytes, schedules, or history. Import explicitly selects a target deck and behavior; it does not automatically reconstruct every exported deck/behavior. Duplicates match normalized Front + selected behavior + target deck and can be skipped, updated, or imported separately. Updates preserve existing scheduling.
+**CSV/TSV** is for plain-text exchange. Export includes Front, Back, Behavior, Deck, and semicolon-separated Tags, but not rich formatting, image/audio bytes, schedules, or history. Import explicitly selects a target deck and behavior; it does not automatically reconstruct every exported deck/behavior. Duplicates match normalized Front + selected behavior + target deck and can be skipped, updated, or imported separately. Updates preserve existing scheduling.
 
 Spreadsheet applications may interpret text beginning with formula characters. Import such CSV/TSV columns as text; Tala preserves the original text rather than rewriting it.
+
+## Nested decks and Anki packages
+
+Parents can contain their own cards. Study, Browse, and text export include descendants by default; Browse and text export offer **Only this deck**. Add card and CSV/TSV import target the chosen deck directly. Use **Add subdeck** or the deck editor’s **Parent** selector to organize a branch. Ordinary **Delete deck** handles its direct cards and promotes children one level; **Delete entire branch** removes all descendants after confirmation.
+
+A card uses its owning deck’s scheduling settings, while admission respects that deck’s and every ancestor’s daily new/review limits. Studying a child alone respects those same limits. Past admission scopes remain recorded after moving cards or reparenting decks. Due learning repetitions remain available after the limit is reached.
+
+Choose **Import** and an `.apkg` file to preview its destination tree, card samples, media, duplicates, and conversion issues. Legacy `collection.anki2`/`collection.anki21` and modern compressed `collection.anki21b` packages are supported. Common Basic, reverse, optional-reverse, and typed templates become independent, editable Tala cards—one for each existing Anki source card. Anki scheduling/history are not imported. New imports use Tala’s default settings and start as New.
+
+Deck paths become real parent/child relationships, with necessary ancestors created and unrelated empty decks omitted. Import from a deck to place package roots beneath it. Matching full paths reuse existing decks; ambiguous paths require a destination choice. Source GUID + template ordinal identifies reimports. **Skip matches** is the default; **Update** preserves Tala schedules/history, and **Import separately** creates unassociated copies.
+
+Scripts, event handlers, and custom styling are removed with conversion warnings. Unsupported cards and missing/corrupt/unsupported media require an explicit **Skip these affected cards** choice; malformed packages block import. Preview changes no collection data, and commit revalidates the package/options digest. Only bundled local images and MP3/PCM WAV audio are imported. Files are limited to 20 MB each, packages to 1 GB, source databases to 256 MB, and total extraction to 4 GB.
+
+Complete archives keep ZIP format v1 and now record database schema v2. Restore migrates verified schema-v1 archives before replacing the collection. Older Tala builds cannot open schema-v2 collections or archives.
 
 ## Development
 
@@ -139,8 +154,8 @@ Do not enable the Cargo `e2e` feature or set `VITE_TALA_E2E=1` for a distributab
 
 ## Current limitations
 
-- One local collection and flat decks; no account, sync, multiple profiles, mobile app, or automatic updater.
-- No Cloze cards, image occlusion, audio, plugins, Anki package support, or FSRS parameter optimization.
+- One local collection; no account, sync, multiple profiles, mobile app, or automatic updater.
+- No Cloze cards, image occlusion, microphone recording, video/TTS, interactive Anki scripts, Anki export, plugins, or FSRS parameter optimization.
 - Dark appearance only. Keyboard shortcuts and packaging are designed and validated for macOS.
 - Search uses token/prefix matching, not Anki's query language. Rich editing uses toolbar controls, not slash commands.
 - The study forecast shows stored due dates before future grades or daily limits; it is not a guaranteed workload. Recall reflects your chosen grades.

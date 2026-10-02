@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { Download, FileUp, ShieldCheck, ArrowRight } from "lucide-react";
+import { AnkiImportDialog } from "./AnkiImportDialog";
+import type { FileSelection } from "../bindings/FileSelection";
 import type { Behavior } from "../bindings/Behavior";
 import type { ImportConfig } from "../bindings/ImportConfig";
 import type { ImportPreview } from "../bindings/ImportPreview";
@@ -15,6 +17,7 @@ export function ImportDialog({
   onClose: () => void;
 }) {
   const { data, run } = useTala();
+  const [ankiFile, setAnkiFile] = useState<FileSelection | null>(null);
   const [fileName, setFileName] = useState("");
   const [busy, setBusy] = useState(false);
   const [previewing, setPreviewing] = useState(false);
@@ -41,6 +44,11 @@ export function ImportDialog({
   async function choose() {
     const file = await run(() => pickFile("import"));
     if (file) {
+      if (file.name.toLowerCase().endsWith(".apkg")) {
+        setAnkiFile(file);
+        return;
+      }
+      setAnkiFile(null);
       setFileName(file.name);
       setConfig((c) => ({
         ...c,
@@ -50,7 +58,7 @@ export function ImportDialog({
     }
   }
   useEffect(() => {
-    if (!config.pathToken || !config.deckId) return;
+    if (ankiFile || !config.pathToken || !config.deckId) return;
     // Mapping changes can race a native preview; only the latest configuration may enable import.
     let cancelled = false;
     setPreviewing(true);
@@ -74,7 +82,7 @@ export function ImportDialog({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [config]);
+  }, [config, ankiFile]);
   async function commit() {
     if (!preview) return;
     setBusy(true);
@@ -93,13 +101,23 @@ export function ImportDialog({
       onClose();
     }
   }
+  if (ankiFile)
+    return (
+      <AnkiImportDialog
+        key={ankiFile.token}
+        file={ankiFile}
+        parentId={deckId}
+        onChoose={choose}
+        onClose={onClose}
+      />
+    );
   const columns = preview?.headers.length
     ? preview.headers
     : ["Column 1", "Column 2", "Column 3"];
   return (
     <Modal
       title="Bring your knowledge along"
-      description="Import a CSV or TSV file. Preview and validate everything before your collection changes."
+      description="Import Anki, CSV, or TSV files. Preview and validate everything before your collection changes."
       open
       onClose={onClose}
       wide
@@ -108,12 +126,18 @@ export function ImportDialog({
         <FileUp size={27} />
         <div>
           <strong>{fileName || "Choose a flashcard file"}</strong>
-          <small>CSV or TSV · UTF-8 text · up to 100 MB</small>
+          <small>Anki .apkg · CSV or TSV text</small>
         </div>
         <Button onClick={choose}>
           {fileName ? "Change file" : "Choose file"}
         </Button>
       </div>
+      {fileName && !data.decks.length && (
+        <p className="notice">
+          Create a Tala deck to receive CSV/TSV cards. Anki packages create
+          their own decks.
+        </p>
+      )}
       {fileName && (
         <>
           <div className="form-grid three">
@@ -133,7 +157,7 @@ export function ImportDialog({
               >
                 {data.decks.map((d) => (
                   <option key={d.id} value={d.id}>
-                    {d.name}
+                    {d.path}
                   </option>
                 ))}
               </select>
@@ -302,6 +326,7 @@ export function ExportDialog({
     deckId || ids?.length ? "csv" : "native",
   );
   const [busy, setBusy] = useState(false);
+  const [onlyThisDeck, setOnlyThisDeck] = useState(false);
   const name = data.decks.find((d) => d.id === deckId)?.name;
   async function save() {
     setBusy(true);
@@ -323,6 +348,7 @@ export function ExportDialog({
             format,
             deckId: deckId ?? null,
             ids: ids ?? [],
+            onlyThisDeck,
           },
         });
       return true;
@@ -387,10 +413,20 @@ export function ExportDialog({
           </label>
         ))}
       </div>
+      {deckId && !ids?.length && format !== "native" && (
+        <label className="checkbox-line">
+          <input
+            type="checkbox"
+            checked={onlyThisDeck}
+            onChange={(event) => setOnlyThisDeck(event.target.checked)}
+          />
+          Only this deck (exclude subdecks)
+        </label>
+      )}
       <p className="notice">
         {format === "native"
           ? "Native exports contain the entire collection, even when opened from a deck or selection. Restore them from Settings → Data & backups."
-          : "CSV/TSV exports do not preserve rich formatting, images, or scheduling. Choose Tala format for a complete, recoverable copy. Spreadsheet apps may interpret text beginning with “=” as formulas."}
+          : "CSV/TSV exports do not preserve rich formatting, images, audio, or scheduling. Choose Tala format for a complete, recoverable copy. Spreadsheet apps may interpret text beginning with “=” as formulas."}
       </p>
       <div className="modal-actions">
         <Button onClick={onClose}>Cancel</Button>

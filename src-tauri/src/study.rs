@@ -14,35 +14,11 @@ impl Store {
     pub fn daily_used(&self, deck: &str, category: &str) -> Result<u32> {
         Ok(self
             .conn
-            .query_row("SELECT count(DISTINCT card_id) FROM reviews WHERE deck_id=?1 AND day=?2 AND category=?3 AND undone_at IS NULL", params![deck, self.now().day(), category], |r| r.get(0))?)
+            .query_row("SELECT count(DISTINCT r.card_id) FROM reviews r JOIN review_scopes s ON s.review_id=r.id WHERE s.deck_id=?1 AND r.day=?2 AND r.category=?3 AND r.undone_at IS NULL", params![deck, self.now().day(), category], |r| r.get(0))?)
     }
     pub fn decks(&self) -> Result<Vec<Deck>> {
-        let mut decks = self
-            .conn
-            .prepare(
-                "SELECT id,name,cover,color,settings,created_at,updated_at FROM decks WHERE deleted_at IS \
-                    NULL ORDER BY name COLLATE NOCASE,id",
-            )?
-            .query_map([], |r| {
-                Ok(Deck {
-                    id: r.get(0)?,
-                    name: r.get(1)?,
-                    cover: r.get(2)?,
-                    color: r.get(3)?,
-                    settings: json_column(r, 4)?,
-                    created_at: r.get(5)?,
-                    updated_at: r.get(6)?,
-                    total: 0,
-                    new_count: 0,
-                    learning: 0,
-                    review: 0,
-                    due: 0,
-                    in_review: 0,
-                    limited_new: 0,
-                    limited_review: 0,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut decks = self.deck_records()?;
+        let queue = self.allocate_queue(&decks, None)?;
         let now = self.now().now;
         for deck in &mut decks {
             deck.total = self.conn.query_row(
@@ -64,16 +40,9 @@ impl Store {
             }
             let raw_new = *counts.get("new").unwrap_or(&0);
             let raw_review = *counts.get("review").unwrap_or(&0);
-            deck.new_count = raw_new.min(
-                deck.settings
-                    .new_limit
-                    .saturating_sub(self.daily_used(&deck.id, "new")?),
-            );
-            deck.review = raw_review.min(
-                deck.settings
-                    .review_limit
-                    .saturating_sub(self.daily_used(&deck.id, "review")?),
-            );
+            let available = &queue.counts[&deck.id];
+            deck.new_count = available.new_count;
+            deck.review = available.review;
             deck.learning =
                 counts.get("learning").unwrap_or(&0) + counts.get("relearning").unwrap_or(&0);
             deck.limited_new = raw_new - deck.new_count;
@@ -85,6 +54,25 @@ impl Store {
                 params![deck.id, now],
                 |r| r.get(0),
             )?;
+        }
+        let records = decks.clone();
+        for deck in &mut decks {
+            let branch = self.descendant_ids(&deck.id)?;
+            let selected = self.allocate_queue(&records, Some(&deck.id))?;
+            let mut counts = DeckCounts::default();
+            for own in records.iter().filter(|d| branch.contains(&d.id)) {
+                counts.total += own.total;
+                counts.in_review += own.in_review;
+                if let Some(available) = selected.counts.get(&own.id) {
+                    counts.new_count += available.new_count;
+                    counts.review += available.review;
+                    counts.learning += available.learning;
+                    counts.limited_new += own.new_count + own.limited_new - available.new_count;
+                    counts.limited_review += own.review + own.limited_review - available.review;
+                }
+            }
+            counts.due = counts.new_count + counts.review + counts.learning;
+            deck.subtree_counts = counts;
         }
         Ok(decks)
     }
@@ -103,80 +91,14 @@ impl Store {
         {
             return Ok(current);
         }
-        let decks = self.decks()?;
+        let decks = self.deck_records()?;
         let clock = self.now();
-        let mut cards = Vec::new();
-        let mut learning = Vec::new();
-        for deck in decks
-            .into_iter()
-            .filter(|d| deck_id.as_ref().is_none_or(|id| &d.id == id))
-        {
-            let base = "SELECT c.id FROM cards c JOIN notes n ON n.id=c.note_id WHERE c.deck_id=?1 AND \
-                c.deleted_at IS NULL AND c.suspended=0 AND (c.buried_until IS NULL OR \
-                c.buried_until<=?2) AND c.due<=?2";
-            let query = |sql: String, limit: u32| -> Result<Vec<String>> {
-                Ok(self
-                    .conn
-                    .prepare(&sql)?
-                    .query_map(params![deck.id, clock.now, limit], |r| r.get(0))?
-                    .collect::<rusqlite::Result<_>>()?)
-            };
-            let new = query(
-                format!(
-                    "{base} AND c.phase='new' ORDER BY {} LIMIT ?3",
-                    if deck.settings.new_order == "random" {
-                        "random()"
-                    } else {
-                        "n.created_at,n.rowid"
-                    }
-                ),
-                deck.new_count,
-            )?;
-            let review = query(
-                format!(
-                    "{base} AND c.phase='review' ORDER BY {} LIMIT ?3",
-                    if deck.settings.review_order == "random" {
-                        "random()"
-                    } else {
-                        "c.due,c.id"
-                    }
-                ),
-                deck.review,
-            )?;
-            learning.extend(query(
-                format!("{base} AND c.phase IN ('learning','relearning') ORDER BY c.due LIMIT ?3"),
-                100_000,
-            )?);
-            match deck.settings.new_placement.as_str() {
-                "before" => {
-                    cards.extend(new);
-                    cards.extend(review);
-                }
-                "mix" => {
-                    let mut n = new.into_iter();
-                    let mut r = review.into_iter();
-                    loop {
-                        let a = r.next();
-                        let b = n.next();
-                        if a.is_none() && b.is_none() {
-                            break;
-                        }
-                        cards.extend(a);
-                        cards.extend(b);
-                    }
-                }
-                _ => {
-                    cards.extend(review);
-                    cards.extend(new);
-                }
-            }
-        }
-        learning.extend(cards);
+        let queue = self.allocate_queue(&decks, deck_id.as_deref())?;
         let session = SessionRecord {
             id: id(),
             day: clock.day(),
             deck_id,
-            card_ids: learning,
+            card_ids: queue.ids,
             completed: vec![],
             skipped: vec![],
         };
@@ -194,7 +116,7 @@ impl Store {
             .prepare(
                 "SELECT \
                     c.id,c.due,c.deleted_at,c.suspended,c.buried_until,d.deleted_at,c.deck_id,c.phase,EXISTS(SELECT \
-                    1 FROM reviews r WHERE r.card_id=c.id AND r.day=?2 AND r.undone_at IS NULL) FROM cards c \
+                    1 FROM reviews r WHERE r.card_id=c.id AND r.day=?2 AND r.category=c.phase AND r.undone_at IS NULL) FROM cards c \
                     JOIN decks d ON d.id=c.deck_id WHERE c.id IN (SELECT value FROM json_each(?1))",
             )?
             .query_map(params![serde_json::to_string(&session.card_ids)?, clock.day()], |r| {
@@ -231,6 +153,11 @@ impl Store {
                 },
             )
             .collect();
+        let decks = self.deck_records()?;
+        let scope: HashSet<String> = match &session.deck_id {
+            Some(id) => self.descendant_ids(id)?.into_iter().collect(),
+            None => decks.iter().map(|d| d.id.clone()).collect(),
+        };
         let mut budgets = HashMap::<(String, String), u32>::new();
         let mut current = None;
         let mut next_due = None;
@@ -251,7 +178,9 @@ impl Store {
                 session.skipped.push(card_id.clone());
                 continue;
             };
-            if deleted.is_some()
+            if !scope.contains(deck)
+                || !decks.iter().any(|d| &d.id == deck)
+                || deleted.is_some()
                 || *suspended
                 || buried.is_some_and(|x| x > clock.now)
                 || deck_deleted.is_some()
@@ -261,25 +190,24 @@ impl Store {
                 continue;
             }
             if !admitted && (phase == "new" || phase == "review") {
-                let key = (deck.clone(), phase.clone());
-                if !budgets.contains_key(&key) {
-                    let settings = self.deck_settings(deck)?;
-                    let limit = if phase == "new" {
-                        settings.new_limit
-                    } else {
-                        settings.review_limit
-                    };
-                    budgets.insert(
-                        key.clone(),
-                        limit.saturating_sub(self.daily_used(deck, phase)?),
-                    );
+                let chain = crate::hierarchy::ancestors(&decks, deck)?;
+                for id in &chain {
+                    let key = (id.clone(), phase.clone());
+                    if let std::collections::hash_map::Entry::Vacant(entry) = budgets.entry(key) {
+                        let owner = decks.iter().find(|d| &d.id == id).expect("ancestor");
+                        entry.insert(self.budget_remaining(owner, phase)?);
+                    }
                 }
-                let remaining = budgets.get_mut(&key).expect("budget initialized");
-                if *remaining == 0 {
+                if chain
+                    .iter()
+                    .any(|id| budgets[&(id.clone(), phase.clone())] == 0)
+                {
                     session.skipped.push(card_id.clone());
                     continue;
                 }
-                *remaining -= 1;
+                for id in chain {
+                    *budgets.get_mut(&(id, phase.clone())).expect("budget") -= 1;
+                }
             }
             if *due <= clock.now && current.is_none() {
                 current = Some(card_id.clone());
@@ -363,15 +291,24 @@ impl Store {
             _ => "learning",
         };
         if category != "learning" {
-            let admitted = self.conn.query_row("SELECT EXISTS(SELECT 1 FROM reviews WHERE card_id=?1 AND day=?2 AND undone_at IS NULL)", params![card.id, clock.day()], |r| r.get::<_, bool>(0))?;
-            let limit = if category == "new" {
-                settings.new_limit
-            } else {
-                settings.review_limit
-            };
-            if !admitted && self.daily_used(&card.deck_id, category)? >= limit {
+            let admitted = self.conn.query_row("SELECT EXISTS(SELECT 1 FROM reviews WHERE card_id=?1 AND day=?2 AND category=?3 AND undone_at IS NULL)", params![card.id, clock.day(), category], |r| r.get::<_, bool>(0))?;
+            if !admitted {
+                let decks = self.deck_records()?;
+                for id in crate::hierarchy::ancestors(&decks, &card.deck_id)? {
+                    let owner = decks.iter().find(|d| d.id == id).expect("ancestor");
+                    if self.budget_remaining(owner, category)? == 0 {
+                        return Err(AppError::conflict(
+                            "This deck or a parent has reached its daily limit. Adjust the limit or return tomorrow.",
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some(root) = &session.deck_id {
+            self.assert_deck(root)?;
+            if !self.descendant_ids(root)?.contains(&card.deck_id) {
                 return Err(AppError::conflict(
-                    "This deck’s daily limit has been reached. Adjust the limit or return tomorrow.",
+                    "This card moved outside the study branch.",
                 ));
             }
         }
@@ -405,6 +342,9 @@ impl Store {
                     serde_json::to_string(&fsrs::DEFAULT_PARAMETERS)?
                 ],
             )?;
+            for scope in store.ancestor_ids(&card.deck_id)? {
+                store.conn.execute("INSERT INTO review_scopes(review_id,deck_id) VALUES (?1,?2)",params![review_id,scope])?;
+            }
             store.write_schedule(&card.id, &next)?;
             if next.lapses >= settings.leech_threshold {
                 store.conn.execute("UPDATE cards SET leech=1,suspended=CASE WHEN ?1 THEN 1 ELSE suspended END WHERE id=?2", params![settings.suspend_leeches, card.id])?;

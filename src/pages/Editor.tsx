@@ -115,6 +115,8 @@ export function CardPreview({
         <span className="eyebrow">{revealed ? "ANSWER" : "QUESTION"}</span>
         <ContentRender
           directory={data.mediaDir}
+          playbackKey={revealed ? "answer" : "question"}
+          autoplay={data.preferences.audioAutoplay}
           value={
             revealed
               ? behavior === "reversed"
@@ -330,7 +332,7 @@ function EditorForm({
           >
             {data.decks.map((d) => (
               <option key={d.id} value={d.id}>
-                {d.name}
+                {d.path}
               </option>
             ))}
           </select>
@@ -398,8 +400,8 @@ function EditorForm({
         )}
       </footer>
       <p className="editor-tip">
-        Paste or drop images directly into either side. Equations and images
-        stay available offline.
+        Paste or drop images and audio directly into either side. Equations and
+        media stay available offline.
       </p>
       {preview && (
         <CardPreview

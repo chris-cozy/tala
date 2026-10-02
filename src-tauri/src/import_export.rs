@@ -209,6 +209,16 @@ impl Store {
         deck: Option<String>,
         ids: Vec<String>,
     ) -> Result<u32> {
+        self.export_delimited_scope(token, format, deck, ids, false)
+    }
+    pub fn export_delimited_scope(
+        &self,
+        token: &str,
+        format: &str,
+        deck: Option<String>,
+        ids: Vec<String>,
+        only_this_deck: bool,
+    ) -> Result<u32> {
         let path = self.granted_path(token, "delimited")?;
         let delimiter = match format {
             "csv" => b',',
@@ -218,8 +228,13 @@ impl Store {
         let mut sql = format!("{CARD_SELECT} WHERE c.deleted_at IS NULL");
         let mut values = Vec::<rusqlite::types::Value>::new();
         if let Some(deck) = deck {
-            sql.push_str(" AND c.deck_id=?");
-            values.push(deck.into());
+            sql.push_str(" AND c.deck_id IN (SELECT value FROM json_each(?))");
+            let decks = if only_this_deck {
+                vec![deck]
+            } else {
+                self.descendant_ids(&deck)?
+            };
+            values.push(serde_json::to_string(&decks)?.into());
         }
         if !ids.is_empty() {
             sql.push_str(" AND c.id IN (SELECT value FROM json_each(?))");
@@ -235,12 +250,20 @@ impl Store {
             .delimiter(delimiter)
             .from_writer(vec![]);
         writer.write_record(["Front", "Back", "Behavior", "Deck", "Tags"])?;
+        let paths: std::collections::HashMap<_, _> = self
+            .deck_records()?
+            .into_iter()
+            .map(|d| (d.id, d.path))
+            .collect();
         for card in &cards {
             writer.write_record([
                 card.front_text.as_str(),
                 card.back_text.as_str(),
                 behavior_text(&card.behavior),
-                card.deck_name.as_str(),
+                paths
+                    .get(&card.deck_id)
+                    .map(String::as_str)
+                    .unwrap_or(&card.deck_name),
                 card.tags.join(";").as_str(),
             ])?;
         }

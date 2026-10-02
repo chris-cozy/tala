@@ -23,7 +23,21 @@ fn schema(conn: &Connection) -> Result<BTreeMap<String, String>> {
 pub(crate) fn validate_schema(conn: &Connection) -> Result<()> {
     let reference = Connection::open_in_memory()?;
     reference.execute_batch(include_str!("../migrations/001_initial.sql"))?;
-    if schema(conn)? != schema(&reference)? {
+    let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version == 2 {
+        reference.execute_batch(include_str!("../migrations/002_hierarchy.sql"))?;
+    }
+    let mut actual = schema(conn)?;
+    let mut expected = schema(&reference)?;
+    // These derived indexes were added within schema v1. Older archives may
+    // lack them; migration recreates them after the trusted shape is checked.
+    if version == 1 {
+        for name in ["reviews_daily_summary", "reviews_first_graduation"] {
+            actual.remove(name);
+            expected.remove(name);
+        }
+    }
+    if ![1, 2].contains(&version) || actual != expected {
         return Err(AppError::invalid(
             "This collection's database structure does not match Tala's supported schema. Restore a known-good backup; the current files have not been replaced.",
         ));
@@ -33,7 +47,27 @@ pub(crate) fn validate_schema(conn: &Connection) -> Result<()> {
 
 pub(crate) fn check(conn: &Connection, media_dir: &Path) -> Result<IntegrityReport> {
     validate_schema(conn)?;
-    let mut issues = Vec::new();
+    let mut issues = if conn.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))? == 2 {
+        crate::hierarchy::hierarchy_issues(conn)?
+    } else {
+        Vec::new()
+    };
+    if conn.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))? == 2 {
+        let missing_scopes: u32 = conn.query_row("SELECT count(*) FROM reviews r JOIN decks d ON d.id=r.deck_id WHERE NOT EXISTS(SELECT 1 FROM review_scopes s WHERE s.review_id=r.id AND s.deck_id=r.deck_id)", [], |r| r.get(0))?;
+        if missing_scopes > 0 {
+            issues.push(format!(
+                "{missing_scopes} reviews are missing their original owning-deck budget scope."
+            ));
+        }
+        let invalid_sources: u32 = conn.query_row(
+            "SELECT count(*) FROM anki_sources WHERE guid='' OR ordinal<0",
+            [],
+            |r| r.get(0),
+        )?;
+        if invalid_sources > 0 {
+            issues.push("Invalid Anki source identities.".into());
+        }
+    }
     for check in conn
         .prepare("PRAGMA integrity_check")?
         .query_map([], |r| r.get::<_, String>(0))?
@@ -112,6 +146,31 @@ pub(crate) fn check(conn: &Connection, media_dir: &Path) -> Result<IntegrityRepo
             if safe_front != front || safe_back != back || version != 1 {
                 return Err(AppError::invalid("Unsupported or non-canonical content."));
             }
+            fn kinds(conn: &Connection, value: &Value) -> Result<()> {
+                if matches!(value["type"].as_str(), Some("image" | "audio")) {
+                    let id = value["attrs"]["mediaId"].as_str().unwrap_or("");
+                    let expected = if value["type"] == "audio" {
+                        "audio/%"
+                    } else {
+                        "image/%"
+                    };
+                    if !conn.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM media WHERE id=?1 AND mime LIKE ?2)",
+                        params![id, expected],
+                        |r| r.get::<_, bool>(0),
+                    )? {
+                        return Err(AppError::invalid("Missing or incorrect media type."));
+                    }
+                }
+                if let Some(children) = value["content"].as_array() {
+                    for child in children {
+                        kinds(conn, child)?;
+                    }
+                }
+                Ok(())
+            }
+            kinds(conn, &front)?;
+            kinds(conn, &back)?;
             media.extend(back_media);
             media.sort();
             media.dedup();
@@ -171,7 +230,7 @@ pub(crate) fn check(conn: &Connection, media_dir: &Path) -> Result<IntegrityRepo
         if let Some(cover) = cover
             && (!valid_media_id(&cover)
                 || !conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM media WHERE id=?1)",
+                    "SELECT EXISTS(SELECT 1 FROM media WHERE id=?1 AND mime LIKE 'image/%')",
                     [cover],
                     |r| r.get::<_, bool>(0),
                 )?)
@@ -257,48 +316,35 @@ pub(crate) fn check(conn: &Connection, media_dir: &Path) -> Result<IntegrityRepo
         }
     }
     for row in conn
-        .prepare("SELECT id,bytes FROM media")?
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?)))?
+        .prepare("SELECT id,bytes,mime FROM media")?
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, u64>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?
     {
-        let (id, length) = row?;
+        let (id, length, mime) = row?;
         let path = media_dir.join(&id);
         if !valid_media_id(&id) || !path.is_file() {
             missing_media.push(id);
             continue;
         }
         if length > 20 * 1024 * 1024 || fs::metadata(&path)?.len() != length {
-            issues.push(format!("Image size does not match its record: {id}."));
+            issues.push(format!("Media size does not match its record: {id}."));
             continue;
         }
         let bytes = fs::read(path)?;
         if !id.starts_with(&hex::encode(Sha256::digest(&bytes))) {
-            issues.push(format!("Image checksum failed: {id}."));
+            issues.push(format!("Media checksum failed: {id}."));
         }
-        let valid_image = (|| -> Option<()> {
-            let reader = image::ImageReader::new(std::io::Cursor::new(&bytes))
-                .with_guessed_format()
-                .ok()?;
-            let format = reader.format()?;
-            let extension = match format {
-                image::ImageFormat::Png => "png",
-                image::ImageFormat::Jpeg => "jpg",
-                image::ImageFormat::WebP => "webp",
-                image::ImageFormat::Gif => "gif",
-                _ => return None,
-            };
-            if !id.ends_with(&format!(".{extension}")) {
-                return None;
-            }
-            let (width, height) = reader.into_dimensions().ok()?;
-            if width == 0 || height == 0 || width as u64 * height as u64 > 40_000_000 {
-                return None;
-            }
-            image::load_from_memory_with_format(&bytes, format).ok()?;
-            Some(())
-        })()
-        .is_some();
-        if !valid_image {
-            issues.push(format!("Image cannot be decoded safely: {id}."));
+        if !crate::media::validate(&bytes, mime.starts_with("audio/"))
+            .is_ok_and(|info| info.mime == mime && id.ends_with(&format!(".{}", info.extension)))
+        {
+            issues.push(format!(
+                "Media cannot be decoded safely or has the wrong type: {id}."
+            ));
         }
     }
     let unused_media = conn

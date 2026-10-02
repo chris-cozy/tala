@@ -53,6 +53,7 @@ export default function BrowsePage({
   const { data, run, ask, confirm, navigate, exportCards } = useTala();
   const [search, setSearch] = useState("");
   const [debounced, setDebounced] = useState("");
+  const [onlyThisDeck, setOnlyThisDeck] = useState(false);
   const [deck, setDeck] = useState(deckId ?? "");
   const [selectedTag, setTag] = useState(tag ?? "");
   const [state, setState] = useState("");
@@ -74,10 +75,11 @@ export default function BrowsePage({
     // A new filter must not keep hidden selections that a later bulk action could change.
     setOffset(0);
     setSelected(new Set());
-  }, [debounced, deck, selectedTag, state, leech, trash]);
+  }, [debounced, deck, onlyThisDeck, selectedTag, state, leech, trash]);
   const filter: BrowseQuery = {
     search: debounced,
     deck: deck || null,
+    onlyThisDeck,
     tag: selectedTag || null,
     state: state || null,
     leech,
@@ -242,7 +244,7 @@ export default function BrowsePage({
             className="browser-front"
             onClick={() => setDetail(info.row.original.id)}
           >
-            {info.getValue() || "Image / equation"}
+            {info.getValue() || "Image / audio / equation"}
           </button>
         ),
       }),
@@ -251,10 +253,19 @@ export default function BrowsePage({
         size: 190,
         header: "Back",
         cell: (info) => (
-          <span className="muted">{info.getValue() || "Image / equation"}</span>
+          <span className="muted">
+            {info.getValue() || "Image / audio / equation"}
+          </span>
         ),
       }),
-      column.accessor("deckName", { id: "deck", size: 155, header: "Deck" }),
+      column.accessor("deckName", {
+        id: "deck",
+        size: 155,
+        header: "Deck",
+        cell: (info) =>
+          data.decks.find((deck) => deck.id === info.row.original.deckId)
+            ?.path ?? info.getValue(),
+      }),
       column.accessor("behavior", {
         id: "behavior",
         size: 140,
@@ -311,7 +322,7 @@ export default function BrowsePage({
           info.getValue() ? <span className="text-amber">Yes</span> : "—",
       }),
     ],
-    [cards, selected],
+    [cards, selected, data.decks],
   );
   const table = useReactTable({
     data: cards,
@@ -383,7 +394,7 @@ export default function BrowsePage({
           <option value="">All decks</option>
           {data.decks.map((d) => (
             <option key={d.id} value={d.id}>
-              {d.name}
+              {d.path}
             </option>
           ))}
         </select>
@@ -414,6 +425,16 @@ export default function BrowsePage({
             <option key={s}>{s}</option>
           ))}
         </select>
+        {deck && (
+          <label className="check-label compact-check">
+            <input
+              type="checkbox"
+              checked={onlyThisDeck}
+              onChange={(e) => setOnlyThisDeck(e.target.checked)}
+            />
+            Only this deck
+          </label>
+        )}
         <label className="check-label compact-check">
           <input
             type="checkbox"
@@ -670,7 +691,7 @@ export default function BrowsePage({
             >
               {data.decks.map((d) => (
                 <option key={d.id} value={d.id}>
-                  {d.name}
+                  {d.path}
                 </option>
               ))}
             </select>

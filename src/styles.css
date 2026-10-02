@@ -1,6 +1,7 @@
 @import url("./styles/workspace.css");
 @import url("./styles/study-editor.css");
 @import url("./styles/management.css");
+@import url("./styles/media-decks.css");
 
 :root {
   color-scheme: dark;

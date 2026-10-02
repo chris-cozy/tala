@@ -44,7 +44,7 @@ pub fn valid_media_id(id: &str) -> bool {
         && hash
             .bytes()
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
-        && ["png", "jpg", "webp", "gif"].contains(&ext)
+        && ["png", "jpg", "webp", "gif", "mp3", "wav"].contains(&ext)
 }
 pub fn plain_text(node: &Value) -> String {
     let mut text = String::new();
@@ -112,6 +112,7 @@ pub fn validate_document(value: &Value) -> Result<(Value, Vec<String>)> {
             "horizontalRule",
             "heading",
             "image",
+            "audio",
             "inlineMath",
             "blockMath",
         ]
@@ -145,6 +146,7 @@ pub fn validate_document(value: &Value) -> Result<(Value, Vec<String>)> {
                         | "horizontalRule"
                         | "heading"
                         | "image"
+                        | "audio"
                         | "blockMath"
                 )
             )
@@ -179,6 +181,14 @@ pub fn validate_document(value: &Value) -> Result<(Value, Vec<String>)> {
             if result["text"].as_str().unwrap().is_empty() {
                 return Err(AppError::invalid("Empty text nodes are not supported."));
             }
+        }
+        if kind == "audio" {
+            let id = v["attrs"]["mediaId"]
+                .as_str()
+                .filter(|id| valid_media_id(id))
+                .ok_or_else(|| AppError::invalid("Attach audio locally before saving the card."))?;
+            media.insert(id.to_string());
+            result["attrs"] = json!({"mediaId":id,"label":v["attrs"]["label"].as_str().unwrap_or("").chars().take(200).collect::<String>()});
         }
         if kind == "image" {
             let id = v["attrs"]["mediaId"]
@@ -261,7 +271,7 @@ pub fn validate_document(value: &Value) -> Result<(Value, Vec<String>)> {
     let text = plain_text(&document);
     if text.is_empty() && media.is_empty() {
         return Err(AppError::invalid(
-            "Front and Back must each contain text, an image, or a formula.",
+            "Front and Back must each contain text, an image, audio, or a formula.",
         ));
     }
     Ok((document, media.into_iter().collect()))

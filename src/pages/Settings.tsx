@@ -76,7 +76,7 @@ export default function SettingsPage() {
   async function cleanup() {
     if (
       await confirm({
-        title: "Remove unused images?",
+        title: "Remove unused media?",
         message:
           "Only media not referenced by any note (including Recently Deleted) or deck will be removed. Existing backups retain their own copies.",
         confirm: "Remove unused media",
@@ -168,6 +168,26 @@ export default function SettingsPage() {
                   </option>
                 ))}
               </select>
+            </div>
+            <div className="settings-row">
+              <div>
+                <strong>Auto-play card audio</strong>
+                <p>
+                  Play clips in order when a card side appears during study or
+                  preview.
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                aria-label="Auto-play card audio"
+                checked={preferences.audioAutoplay}
+                onChange={(e) =>
+                  setPreferences({
+                    ...preferences,
+                    audioAutoplay: e.target.checked,
+                  })
+                }
+              />
             </div>
             <div className="settings-row">
               <div>
@@ -387,8 +407,7 @@ export default function SettingsPage() {
               <div>
                 <h2>Collection health</h2>
                 <p>
-                  Check database relationships, scheduling states, and local
-                  images.
+                  Check deck relationships, scheduling states, and local media.
                 </p>
               </div>
               <CheckCircle2 size={21} />
@@ -413,17 +432,17 @@ export default function SettingsPage() {
                   <p key={i}>{issue}</p>
                 ))}
                 <p>
-                  {number(report.missingMedia.length)} missing images ·{" "}
-                  {number(report.unusedMedia.length)} unused images
+                  {number(report.missingMedia.length)} missing media ·{" "}
+                  {number(report.unusedMedia.length)} unused media
                 </p>
                 {report.missingMedia.length > 0 && (
                   <details>
-                    <summary>Missing image references</summary>
+                    <summary>Missing media references</summary>
                     {report.missingMedia.map((id) => (
                       <code key={id}>{id}</code>
                     ))}
                     <p>
-                      Reattach missing images from the editor or restore a
+                      Reattach missing media from the editor or restore a
                       complete backup. Tala will not guess or delete damaged
                       records.
                     </p>
@@ -431,7 +450,7 @@ export default function SettingsPage() {
                 )}
                 {report.unusedMedia.length > 0 && (
                   <Button disabled={!report.healthy} onClick={cleanup}>
-                    Remove unused images
+                    Remove unused media
                   </Button>
                 )}
                 {!report.healthy && (

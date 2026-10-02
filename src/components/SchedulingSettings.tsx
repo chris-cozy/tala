@@ -221,6 +221,7 @@ export function DeckSettingsDialog({
           action: "save_deck",
           payload: {
             id: deck.id,
+            parentId: deck.parentId,
             name: deck.name,
             cover: deck.cover,
             color: deck.color,
@@ -235,7 +236,7 @@ export function DeckSettingsDialog({
   return (
     <Modal
       title={`${deck.name} · Scheduling`}
-      description="Changes apply to future reviews. Existing due dates remain unchanged unless you explicitly reschedule cards in Browse."
+      description="Daily limits apply to this deck and its descendants, together with ancestor limits. Other settings apply to cards owned by this deck. Existing due dates stay unchanged."
       wide
       open
       onClose={onClose}

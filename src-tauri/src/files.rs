@@ -1,4 +1,4 @@
-//! Native file grants, atomic exports, and immutable content-addressed images.
+//! Native file grants, atomic exports, and immutable content-addressed media.
 //! The frontend cannot choose arbitrary filesystem paths through collection commands.
 
 use crate::{
@@ -11,7 +11,7 @@ use rusqlite::params;
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
-    io::{Cursor, Write},
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -61,33 +61,40 @@ impl Store {
         self.attach_image(&fs::read(path)?)
     }
     pub fn attach_image(&mut self, bytes: &[u8]) -> Result<String> {
-        if bytes.len() > 20 * 1024 * 1024 {
-            return Err(AppError::invalid("Images must be smaller than 20 MB."));
-        }
-        let reader = image::ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
-        let format = reader
-            .format()
-            .ok_or_else(|| AppError::invalid("Choose a PNG, JPEG, WebP, or GIF image."))?;
-        let (extension, mime) = match format {
-            image::ImageFormat::Png => ("png", "image/png"),
-            image::ImageFormat::Jpeg => ("jpg", "image/jpeg"),
-            image::ImageFormat::WebP => ("webp", "image/webp"),
-            image::ImageFormat::Gif => ("gif", "image/gif"),
-            _ => return Err(AppError::invalid("Choose a PNG, JPEG, WebP, or GIF image.")),
-        };
-        let (width, height) = reader
-            .into_dimensions()
-            .map_err(|_| AppError::invalid("This image is damaged."))?;
-        if width == 0 || height == 0 || width as u64 * height as u64 > 40_000_000 {
+        self.attach_media(bytes, false)
+    }
+    pub fn attach_audio_file(&mut self, token: &str) -> Result<String> {
+        let path = self.granted_path(token, "audio")?;
+        if fs::metadata(&path)?.len() > 20 * 1024 * 1024 {
             return Err(AppError::invalid(
-                "Images must contain at most 40 million pixels.",
+                "Audio files must be no larger than 20 MB.",
             ));
         }
-        image::load_from_memory_with_format(bytes, format)
-            .map_err(|_| AppError::invalid("This image cannot be decoded."))?;
+        self.attach_audio(&fs::read(path)?)
+    }
+    pub fn attach_audio(&mut self, bytes: &[u8]) -> Result<String> {
+        self.attach_media(bytes, true)
+    }
+    pub(crate) fn attach_media(&mut self, bytes: &[u8], audio: bool) -> Result<String> {
+        let info = crate::media::validate(bytes, audio)?;
+        self.install_media(bytes, info.extension, info.mime)
+    }
+    pub(crate) fn install_media(
+        &mut self,
+        bytes: &[u8],
+        extension: &str,
+        mime: &str,
+    ) -> Result<String> {
         let media_id = format!("{}.{}", hex::encode(Sha256::digest(bytes)), extension);
         let target = self.media_dir().join(&media_id);
-        if !target.exists() {
+        if target.exists() {
+            if hex::encode(Sha256::digest(fs::read(&target)?)) != hex::encode(Sha256::digest(bytes))
+            {
+                return Err(AppError::invalid(
+                    "An existing media file has changed on disk. Run an integrity check or restore a backup.",
+                ));
+            }
+        } else {
             atomic_write(&target, bytes)?;
         }
         self.conn.execute(
@@ -145,7 +152,7 @@ impl Store {
         let target = self.granted_path(token, "diagnostics")?;
         let report = self.integrity()?;
         let text = serde_json::to_vec_pretty(
-            &serde_json::json!({"application":"Tala","version":env!("CARGO_PKG_VERSION"),"os":std::env::consts::OS,"architecture":std::env::consts::ARCH,"schemaVersion":1,"integrity":report,"backupWarning":self.backup_warning}),
+            &serde_json::json!({"application":"Tala","version":env!("CARGO_PKG_VERSION"),"os":std::env::consts::OS,"architecture":std::env::consts::ARCH,"schemaVersion":crate::hierarchy::SCHEMA_VERSION,"integrity":report,"backupWarning":self.backup_warning}),
         )?;
         atomic_write(&target, &text)
     }

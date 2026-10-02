@@ -1,15 +1,18 @@
 //! Tala desktop entry point. Rust owns persistence, scheduling, and OS integration;
 //! the bundled webview presents typed collection commands.
 
+mod anki;
 pub mod api;
 mod archive;
 pub mod clock;
 pub mod content;
 pub mod error;
 mod files;
+mod hierarchy;
 mod import_export;
 mod integrity;
 mod logging;
+mod media;
 pub mod models;
 pub mod scheduler;
 mod statistics;
